@@ -133,13 +133,15 @@ To distribute the application as a single **`AptoraSetup.exe`** wizard for Windo
 1. Copy the compiled **`AptoraSetup.exe`** file to the destination computer/server and run it.
 2. The installation wizard will guide you through choosing a destination directory (e.g. `C:\Program Files\Aptora`).
 3. **Auto-Post-Installation**: After copying files, a Command Prompt window will launch to:
-   - Check if Node.js is installed.
-   - Run the custom interactive setup to configure your **Admin Username**, **Admin Email**, and **Admin Password**.
-   - Output the **2FA Secret Key** (Google Authenticator seed) and enforce 2FA login.
-   - Build client production files.
-4. **Launch**:
-   - The installer creates a **Desktop Shortcut** and **Start Menu Shortcut** named **Aptora**.
-   - Double-clicking the shortcut will open `http://localhost:9372` in your default browser and launch the application backend server automatically in the background.
+   - Initialize the fresh SQLite database.
+   - Run the custom interactive setup to configure your **Admin Username**, **Admin Email**, and **Admin Password** with forced 2FA security.
+4. **Desktop Shortcuts Created**:
+   - 🖥️ **Aptora Application**: Instantly opens `http://localhost:9372` in your default browser.
+   - ⚙️ **Aptora Control Panel**: Opens a lightweight service control utility.
+5. **Aptora Control Panel Features**:
+   - **Start/Stop Server**: Run Node backend silently in the background (via VBScript to hide console windows) or terminate the process.
+   - **Auto-Start on Logon**: Enable/disable automatic silent startup of the server when Windows boots up or wakes up.
+   - **Diagnose status**: View real-time online/offline server port status.
 
 ---
 

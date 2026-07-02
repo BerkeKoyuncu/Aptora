@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const otplib = require('otplib');
 const db = require('./db');
 const { encrypt } = require('./auth');
+const qrcode = require('qrcode');
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -76,6 +77,15 @@ async function main() {
     console.log(` Secret Key:       ${twofaSecret}`);
     console.log(' Add this secret to your Authenticator App (Google Authenticator,');
     console.log(' Microsoft Authenticator, KAYTUS/TOTP) to receive 2FA login codes.');
+    
+    try {
+      const otpauthUrl = otplib.authenticator.keyuri(email.trim(), 'Aptora Security', twofaSecret);
+      const qrCodeTerminal = await qrcode.toString(otpauthUrl, { type: 'terminal', small: true });
+      console.log('\n Scan this QR Code with your Google Authenticator / Authy app:\n');
+      console.log(qrCodeTerminal);
+    } catch (qrErr) {
+      console.log('\n (Could not render QR code in terminal, please enter the Secret Key manually)');
+    }
     console.log('===========================================================');
   } catch (error) {
     console.error('\nDatabase initialization failed:', error.message);

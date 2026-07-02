@@ -33,15 +33,17 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; Copy all files in the Aptora directory, excluding database, logs and node_modules
-Source: "D:\Aptora\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "node_modules,client\node_modules,server\database.sqlite,server\database.sqlite-journal,logs,*.log,.git,.gitattributes,.gitignore,installer.iss,AptoraSetup.exe,build-installer.bat"
+Source: "D:\Aptora\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "\node_modules,\client\node_modules,\server\database.sqlite,\server\database.sqlite-journal,\logs,*.log,.git,.gitattributes,.gitignore,installer.iss,AptoraSetup.exe,build-installer.bat"
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\Aptora Application"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\Aptora Application"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\Aptora Control Panel"; Filename: "{app}\AptoraControlPanel.bat"
+Name: "{autodesktop}\Aptora Control Panel"; Filename: "{app}\AptoraControlPanel.bat"; Tasks: desktopicon
 
 [Run]
 ; Run the setup.bat to install packages and configure the Admin account
-Filename: "{cmd}"; Parameters: "/c ""{app}\setup.bat"""; Description: "Initializing dependencies and database..."; Flags: postinstall runascurrentuser
+Filename: "{cmd}"; Parameters: "/c ""{app}\setup.bat"""; WorkingDir: "{app}"; Description: "Initializing dependencies and database..."; Flags: postinstall runascurrentuser
 
-; Launch the application after installation
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: shellexec postinstall nowait skipifsilent
+; Launch the control panel after installation
+Filename: "{app}\AptoraControlPanel.bat"; WorkingDir: "{app}"; Description: "Launch Aptora Control Panel"; Flags: shellexec postinstall nowait skipifsilent

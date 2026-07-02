@@ -9,16 +9,28 @@ echo.
 
 :: Path to Inno Setup Compiler
 set "ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC_PATH%" (
+    set "ISCC_PATH=C:\Program Files\Inno Setup 6\ISCC.exe"
+)
+if not exist "%ISCC_PATH%" (
+    for %%i in (ISCC.exe) do set "ISCC_PATH=%%~$PATH:i"
+)
 
 echo Checking Inno Setup 6 compiler...
-if not exist "%ISCC_PATH%" (
+if "%ISCC_PATH%"=="" (
     color 0C
-    echo ERROR: Inno Setup 6 is not installed on this system!
+    echo ERROR: Inno Setup 6 was not found on this system!
     echo Please download and install Inno Setup 6 from:
     echo https://jrsoftware.org/isdl.php
     echo.
-    echo Installation path expected:
-    echo %ISCC_PATH%
+    pause
+    exit /b 1
+)
+if not exist "%ISCC_PATH%" (
+    color 0C
+    echo ERROR: Inno Setup 6 was not found at expected path!
+    echo Path: "%ISCC_PATH%"
+    echo Please install Inno Setup 6.
     echo.
     pause
     exit /b 1

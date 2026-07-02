@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 title Aptora Setup Wizard for Windows
 color 0A
 cls
