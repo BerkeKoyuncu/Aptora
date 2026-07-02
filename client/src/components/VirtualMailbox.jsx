@@ -24,7 +24,7 @@ export default function VirtualMailbox({ user, addToast }) {
   }, []);
 
   const copyLink = (link) => {
-    navigator.clipboard.writeText(link);
+    api.copyText(link);
     addToast('Invitation link copied to clipboard!');
   };
 

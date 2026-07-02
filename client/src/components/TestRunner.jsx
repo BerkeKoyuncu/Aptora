@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { Shield, Clock, ArrowLeft, ArrowRight, CheckCircle, RefreshCw, UserCheck, AlertTriangle } from 'lucide-react';
+import { Shield, Clock, ArrowLeft, ArrowRight, CheckCircle, RefreshCw, UserCheck, AlertTriangle, Sun, Moon, Download } from 'lucide-react';
 
-export default function TestRunner({ sessionId, addToast }) {
+export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode }) {
   const [sessionInfo, setSessionInfo] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -15,7 +15,7 @@ export default function TestRunner({ sessionId, addToast }) {
   const [jobTitle, setJobTitle] = useState('');
 
   // Exam taking state
-  const [timeLeft, setTimeLeft] = useState(1200); // 20 minutes default (in seconds)
+  const [timeLeft, setTimeLeft] = useState(1200); // Default placeholder
   const [isExamActive, setIsExamActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -36,8 +36,10 @@ export default function TestRunner({ sessionId, addToast }) {
           
           // Re-align timer based on started_at
           const elapsedSeconds = Math.floor((Date.now() - new Date(info.started_at).getTime()) / 1000);
-          const remaining = Math.max(0, 1200 - elapsedSeconds);
+          const remaining = Math.max(0, ((info.duration || 20) * 60) - elapsedSeconds);
           setTimeLeft(remaining);
+        } else {
+          setTimeLeft((info.duration || 20) * 60);
         }
       } catch (err) {
         addToast(err.message, 'error');
@@ -47,6 +49,39 @@ export default function TestRunner({ sessionId, addToast }) {
     };
     loadSession();
   }, [sessionId]);
+
+  // Focus loss tracking thread
+  useEffect(() => {
+    if (!isExamActive) return;
+
+    let focusTimer = null;
+    const handleFocusLoss = async () => {
+      if (focusTimer) clearTimeout(focusTimer);
+      focusTimer = setTimeout(async () => {
+        try {
+          await api.logFocusLost(sessionId);
+          addToast('⚠️ Tab switching detected! This event has been logged for review.', 'error');
+        } catch (err) {
+          console.error('Failed to log focus loss:', err);
+        }
+      }, 500);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        handleFocusLoss();
+      }
+    };
+
+    window.addEventListener('blur', handleFocusLoss);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('blur', handleFocusLoss);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (focusTimer) clearTimeout(focusTimer);
+    };
+  }, [isExamActive, sessionId]);
 
   // Countdown timer thread
   useEffect(() => {
@@ -79,7 +114,7 @@ export default function TestRunner({ sessionId, addToast }) {
       setSessionInfo(data);
       setQuestions(data.questions);
       setIsExamActive(true);
-      setTimeLeft(1200); // Start 20 minutes
+      setTimeLeft((data.duration || 20) * 60); // Start dynamic duration timer
       addToast('Assessment started. Timer is active.');
     } catch (err) {
       addToast(err.message, 'error');
@@ -145,6 +180,57 @@ export default function TestRunner({ sessionId, addToast }) {
       <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--color-bg)' }}>
         <RefreshCw className="animate-spin" size={48} style={{ color: 'var(--color-primary)' }} />
         <p style={{ marginTop: '1rem', color: 'var(--text-secondary)' }}>Securing Exam Connection...</p>
+      </div>
+    );
+  }
+
+  // Safe Exam Browser Protection check
+  const isInSEB = navigator.userAgent.toLowerCase().includes('seb');
+  const requireSEB = sessionInfo?.require_seb;
+
+  if (requireSEB && !isInSEB) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: 'var(--color-bg)', padding: '1.5rem', width: '100vw' }}>
+        <div className="card animate-fade" style={{ width: '100%', maxWidth: '560px', padding: '3rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem', borderLeft: '5px solid var(--color-warning)' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(237, 108, 2, 0.1)', color: 'var(--color-warning)', marginBottom: '0.5rem' }}>
+            <AlertTriangle size={36} />
+          </div>
+          
+          <h2 style={{ margin: 0 }}>Safe Exam Browser Enforced</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', lineHeight: 1.5, margin: 0 }}>
+            This exam requires **Safe Exam Browser (SEB)** to guarantee a secure, locked-down environment. 
+            You cannot start or complete the assessment in standard browsers (Chrome, Edge, Firefox, Safari).
+          </p>
+
+          <div className="card" style={{ padding: '1rem', width: '100%', background: 'var(--color-panel)', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <h4 style={{ margin: 0 }}>Instructions to launch:</h4>
+            <ol style={{ fontSize: '0.8rem', margin: 0, paddingLeft: '1.25rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+              <li>Install Safe Exam Browser if you haven't already.</li>
+              <li>Download the secure exam configuration file below.</li>
+              <li>Double-click the downloaded file (ends with <code>.seb</code>) to launch the locked exam environment.</li>
+            </ol>
+          </div>
+
+          <div style={{ display: 'flex', width: '100%', gap: '1rem' }}>
+            <a 
+              href={`${api.API_BASE}/sessions/${sessionId}/seb-config`} 
+              className="btn btn-primary" 
+              style={{ flex: 1, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <Download size={16} style={{ marginRight: '0.5rem' }} />
+              Download SEB Config
+            </a>
+            <a 
+              href="https://safeexambrowser.org/download.html" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="btn btn-secondary" 
+              style={{ flex: 1, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              Get SEB Browser
+            </a>
+          </div>
+        </div>
       </div>
     );
   }
@@ -238,22 +324,62 @@ export default function TestRunner({ sessionId, addToast }) {
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '1rem 2rem',
-          background: 'white',
-          borderBottom: '1px solid var(--color-border)',
-          boxShadow: 'var(--shadow-sm)'
+          background: 'var(--color-header-bg)',
+          color: 'var(--text-light)',
+          boxShadow: 'var(--shadow-md)'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Shield size={22} style={{ color: 'var(--color-primary)' }} />
-            <h3 style={{ margin: 0, fontSize: '1.1rem' }}>{sessionInfo.test_title}</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <img
+              src="/aptora-favicon-white.svg"
+              alt="Aptora Icon"
+              style={{ width: '28px', height: '28px', display: 'block' }}
+            />
+            <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-light)', fontWeight: 800 }}>{sessionInfo.test_title}</h3>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: timeLeft < 180 ? 'var(--color-error)' : 'var(--text-primary)', fontWeight: 700, background: timeLeft < 180 ? 'rgba(211, 47, 47, 0.08)' : 'var(--color-panel)', padding: '0.5rem 1rem', borderRadius: 'var(--radius-md)' }}>
-              <Clock size={18} className={timeLeft < 180 ? 'animate-spin' : ''} />
-              <span style={{ fontSize: '1.1rem', fontFamily: 'monospace' }}>{formatTime(timeLeft)}</span>
+            {/* Light/Dark Mode Toggle Switch */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Sun size={16} style={{ color: darkMode ? 'rgba(255,255,255,0.4)' : '#FFD600', transition: 'color 0.2s' }} />
+              <button
+                type="button"
+                onClick={() => setDarkMode(!darkMode)}
+                style={{
+                  position: 'relative',
+                  width: '42px',
+                  height: '22px',
+                  borderRadius: '11px',
+                  backgroundColor: darkMode ? 'var(--color-secondary)' : 'rgba(255, 255, 255, 0.2)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                  outline: 'none',
+                  transition: 'background-color 0.2s',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+                title="Toggle Theme"
+              >
+                <div style={{
+                  width: '18px',
+                  height: '18px',
+                  borderRadius: '50%',
+                  backgroundColor: '#FFFFFF',
+                  position: 'absolute',
+                  left: darkMode ? '22px' : '2px',
+                  transition: 'left 0.2s',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+                }} />
+              </button>
+              <Moon size={16} style={{ color: darkMode ? '#90CAF9' : 'rgba(255,255,255,0.4)', transition: 'color 0.2s' }} />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: timeLeft < 180 ? '#FFCDD2' : '#E0F2F1', fontWeight: 700, background: timeLeft < 180 ? 'rgba(211, 47, 47, 0.2)' : 'rgba(255, 255, 255, 0.08)', padding: '0.5rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255, 255, 255, 0.12)' }}>
+              <Clock size={18} className={timeLeft < 180 ? 'animate-spin' : ''} style={{ color: timeLeft < 180 ? '#FF8A80' : '#80CBC4' }} />
+              <span style={{ fontSize: '1.1rem', fontFamily: 'monospace', color: 'white' }}>{formatTime(timeLeft)}</span>
             </div>
             
-            <button onClick={handleSubmitClick} className="btn btn-secondary btn-sm">
+            <button onClick={handleSubmitClick} className="btn btn-primary btn-sm" style={{ border: '1px solid rgba(255,255,255,0.2)' }}>
               Submit Assessment
             </button>
           </div>
@@ -270,13 +396,10 @@ export default function TestRunner({ sessionId, addToast }) {
               <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
                 QUESTION {currentIdx + 1} OF {questions.length}
               </span>
-              <span className="badge badge-accent">
-                {activeQ.points} Points
-              </span>
             </div>
 
             {/* Question Text Card */}
-            <div className="card" style={{ padding: '2rem', background: 'white' }}>
+            <div className="card" style={{ padding: '2rem', background: 'var(--color-card)' }}>
               <span className="badge badge-primary" style={{ marginBottom: '0.75rem', fontSize: '0.7rem' }}>
                 {activeQ.domain}
               </span>
@@ -300,7 +423,7 @@ export default function TestRunner({ sessionId, addToast }) {
                       padding: '1.25rem 1.5rem',
                       borderRadius: 'var(--radius-md)',
                       border: `2px solid ${isSelected ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                      background: isSelected ? 'rgba(74, 125, 135, 0.05)' : 'white',
+                      background: isSelected ? 'rgba(74, 125, 135, 0.05)' : 'var(--color-card)',
                       cursor: 'pointer',
                       transition: 'all 0.2s',
                       boxShadow: isSelected ? 'var(--shadow-sm)' : 'none'
@@ -362,7 +485,7 @@ export default function TestRunner({ sessionId, addToast }) {
           {/* Right Sidebar navigation grids */}
           <nav style={{
             width: '280px',
-            background: 'white',
+            background: 'var(--color-card)',
             borderLeft: '1px solid var(--color-border)',
             padding: '2rem 1.5rem',
             display: 'flex',
@@ -442,7 +565,7 @@ export default function TestRunner({ sessionId, addToast }) {
   // Phase 3: Post-Exam submission feedback screen
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyItems: 'center', minHeight: '100vh', backgroundColor: 'var(--color-bg)', padding: '1.5rem', width: '100vw', justifyContent: 'center' }}>
-      <div className="card animate-fade" style={{ width: '100%', maxWidth: '480px', padding: '3rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.25rem', background: 'white' }}>
+      <div className="card animate-fade" style={{ width: '100%', maxWidth: '480px', padding: '3rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.25rem', background: 'var(--color-card)' }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(46, 125, 50, 0.1)', color: 'var(--color-success)', marginBottom: '0.5rem' }}>
           <CheckCircle size={38} />
         </div>

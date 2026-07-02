@@ -216,7 +216,7 @@ export default function App() {
   if (currentRoute.path === 'session') {
     return (
       <>
-        <TestRunner sessionId={currentRoute.params.sessionId} addToast={addToast} />
+        <TestRunner sessionId={currentRoute.params.sessionId} addToast={addToast} darkMode={darkMode} setDarkMode={setDarkMode} />
         <ToastContainer toasts={toasts} />
       </>
     );
@@ -401,6 +401,7 @@ export default function App() {
               )}
               <SidebarButton active={activeTab === 'add-question'} onClick={() => { setActiveTab('add-question'); setOpenAddModalOnLoad(false); }} icon={<Plus size={18} />} label="Add Question" collapsed={sidebarCollapsed} />
               <SidebarButton active={activeTab === 'questions'} onClick={() => { setActiveTab('questions'); setOpenAddModalOnLoad(false); }} icon={<Database size={18} />} label="Question List" collapsed={sidebarCollapsed} />
+              <SidebarButton active={activeTab === 'question-advices'} onClick={() => { setActiveTab('question-advices'); setOpenAddModalOnLoad(false); }} icon={<Mail size={18} />} label="Question Advices" collapsed={sidebarCollapsed} />
 
               {sidebarCollapsed ? (
                 <hr style={{ border: 'none', borderTop: '1px solid rgba(255, 255, 255, 0.08)', margin: '0.75rem 0' }} />
@@ -451,6 +452,14 @@ export default function App() {
               addToast={addToast}
               defaultView="list"
               onNavigateToAdd={() => setActiveTab('add-question')}
+            />
+          )}
+
+          {activeTab === 'question-advices' && user.role === 'admin' && (
+            <QuestionDb
+              user={user}
+              addToast={addToast}
+              defaultView="advices"
             />
           )}
 

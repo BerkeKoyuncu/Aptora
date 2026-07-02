@@ -77,10 +77,33 @@ const initDb = async () => {
       difficulty_distribution TEXT NOT NULL, -- JSON object of weights
       domains TEXT NOT NULL, -- JSON array of selected domains
       is_random INTEGER DEFAULT 1,
+      duration INTEGER DEFAULT 20,
+      require_seb INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+
+  // Migration: Add duration column if it does not exist
+  try {
+    await run(`ALTER TABLE tests ADD COLUMN duration INTEGER DEFAULT 20`);
+  } catch (err) {
+    // Column already exists, ignore
+  }
+
+  // Migration: Add require_seb column to tests table
+  try {
+    await run(`ALTER TABLE tests ADD COLUMN require_seb INTEGER DEFAULT 0`);
+  } catch (err) {
+    // Ignore if column exists
+  }
+
+  // Migration: Add focus_lost_count column to test_sessions table
+  try {
+    await run(`ALTER TABLE test_sessions ADD COLUMN focus_lost_count INTEGER DEFAULT 0`);
+  } catch (err) {
+    // Ignore if column exists
+  }
 
   // Create TestSelectedQuestions table (for direct question selection)
   await run(`
@@ -108,6 +131,7 @@ const initDb = async () => {
       status TEXT CHECK(status IN ('pending', 'active', 'completed')) DEFAULT 'pending',
       responses TEXT, -- JSON object of responses
       questions_snapshot TEXT, -- JSON copy of questions at creation
+      focus_lost_count INTEGER DEFAULT 0,
       FOREIGN KEY(test_id) REFERENCES tests(id) ON DELETE CASCADE
     )
   `);

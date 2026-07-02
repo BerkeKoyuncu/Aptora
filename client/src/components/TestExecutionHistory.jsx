@@ -164,10 +164,24 @@ export default function TestExecutionHistory({ user, addToast }) {
                     />
                   </td>
                   <td>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{session.candidate_name || 'Unregistered'}</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <span>{session.candidate_name || 'Unregistered'}</span>
+                      {session.focus_lost_count > 0 && (
+                        <span className="badge badge-danger" style={{ fontSize: '0.65rem', padding: '0.1rem 0.35rem' }} title={`Tab switched ${session.focus_lost_count} times`}>
+                          ⚠️ {session.focus_lost_count} Warning{session.focus_lost_count > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{session.candidate_email}</div>
                   </td>
-                  <td>{session.test_title}</td>
+                  <td>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+                      <span>{session.test_title}</span>
+                      {session.require_seb === 1 || session.require_seb === true ? (
+                        <span style={{ fontSize: '0.65rem', color: 'var(--color-primary)', fontWeight: 600 }}>🛡️ SEB Enforced</span>
+                      ) : null}
+                    </div>
+                  </td>
                   <td>{session.creator_name}</td>
                   <td style={{ fontWeight: 600 }}>{session.status === 'completed' ? `${gradePct} / 100` : '--'}</td>
                   <td style={{ fontWeight: 700 }}>

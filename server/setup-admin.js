@@ -4,13 +4,37 @@ const otplib = require('otplib');
 const db = require('./db');
 const { encrypt } = require('./auth');
 const qrcode = require('qrcode');
+const Writable = require('stream').Writable;
+
+const mutableStdout = new Writable({
+  write: function(chunk, encoding, callback) {
+    if (!this.muted) {
+      process.stdout.write(chunk, encoding);
+    }
+    callback();
+  }
+});
 
 const rl = readline.createInterface({
   input: process.stdin,
-  output: process.stdout
+  output: mutableStdout,
+  terminal: true
 });
 
 const question = (query) => new Promise((resolve) => rl.question(query, resolve));
+
+// Completely silent password reader helper using mutable stdout
+const readPassword = (prompt) => {
+  return new Promise((resolve) => {
+    process.stdout.write(prompt);
+    mutableStdout.muted = true;
+    rl.question('', (pwd) => {
+      mutableStdout.muted = false;
+      process.stdout.write('\n');
+      resolve(pwd);
+    });
+  });
+};
 
 async function main() {
   console.log('===========================================================');
@@ -37,9 +61,15 @@ async function main() {
 
   let password = '';
   while (password.length < 6) {
-    password = await question('Enter Admin Password (min 6 chars): ');
+    password = await readPassword('Enter Admin Password (min 6 chars): ');
     if (password.length < 6) {
       console.log('Password must be at least 6 characters long.\n');
+      continue;
+    }
+    const confirmPassword = await readPassword('Confirm Admin Password: ');
+    if (password !== confirmPassword) {
+      console.log('Passwords do not match. Please try again.\n');
+      password = '';
     }
   }
 

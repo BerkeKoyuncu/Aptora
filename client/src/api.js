@@ -168,5 +168,35 @@ export const api = {
     request('/admin/email-settings', { method: 'POST', body: settings }),
 
   testEmailSettings: (test_email) =>
-    request('/admin/email-settings/test', { method: 'POST', body: { test_email } })
+    request('/admin/email-settings/test', { method: 'POST', body: { test_email } }),
+
+  // Clipboard Copy Helper for secure & insecure contexts
+  copyText: (text) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    } else {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.top = "0";
+      textArea.style.left = "0";
+      textArea.style.position = "fixed";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      let success = false;
+      try {
+        success = document.execCommand('copy');
+      } catch (err) {
+        console.error('Fallback copy failed', err);
+      }
+      document.body.removeChild(textArea);
+      if (success) {
+        return Promise.resolve();
+      } else {
+        return Promise.reject(new Error('Copy failed'));
+      }
+    }
+  },
+  logFocusLost: (sessionId) =>
+    request(`/sessions/${sessionId}/log-focus-lost`, { method: 'POST' })
 };

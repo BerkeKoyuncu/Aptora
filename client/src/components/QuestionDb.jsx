@@ -139,6 +139,82 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
     setShowModal(true);
   };
 
+  const handleExportQuestions = () => {
+    try {
+      const exportData = questions.map(q => ({
+        domain: q.domain,
+        difficulty: q.difficulty,
+        points: q.points,
+        question_text: q.question_text,
+        options: q.options.map(opt => ({
+          text: opt.text,
+          isCorrect: opt.isCorrect
+        }))
+      }));
+
+      const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
+        JSON.stringify(exportData, null, 2)
+      )}`;
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute('href', jsonString);
+      downloadAnchor.setAttribute('download', `aptora_questions_export_${Date.now()}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      addToast('Question database exported successfully as JSON.', 'success');
+    } catch (err) {
+      addToast(`Export failed: ${err.message}`, 'error');
+    }
+  };
+
+  const handleExportCSV = () => {
+    try {
+      const escapeCSV = (text) => {
+        if (text === null || text === undefined) return '';
+        const str = String(text);
+        if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      };
+
+      const headers = ['domain', 'difficulty', 'points', 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'correct_option'];
+      const csvRows = [headers.join(',')];
+
+      for (const q of questions) {
+        const correctIdx = q.options.findIndex(opt => opt.isCorrect);
+        const correctChar = correctIdx !== -1 ? String.fromCharCode(65 + correctIdx) : '';
+
+        const row = [
+          escapeCSV(q.domain),
+          escapeCSV(q.difficulty),
+          escapeCSV(q.points),
+          escapeCSV(q.question_text),
+          escapeCSV(q.options[0]?.text || ''),
+          escapeCSV(q.options[1]?.text || ''),
+          escapeCSV(q.options[2]?.text || ''),
+          escapeCSV(q.options[3]?.text || ''),
+          escapeCSV(correctChar)
+        ];
+        csvRows.push(row.join(','));
+      }
+
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute('href', url);
+      downloadAnchor.setAttribute('download', `aptora_questions_export_${Date.now()}.csv`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      URL.revokeObjectURL(url);
+      addToast('Question database exported successfully as CSV.', 'success');
+    } catch (err) {
+      addToast(`CSV export failed: ${err.message}`, 'error');
+    }
+  };
+
   const handleOptionTextChange = (id, text) => {
     setOptions(prev => prev.map(o => o.id === id ? { ...o, text } : o));
   };
@@ -621,12 +697,13 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
                     style={{ width: '20px', height: '20px', cursor: 'pointer', flexShrink: 0 }}
                   />
                   <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>Choice {String.fromCharCode(65 + idx)}:</span>
-                  <input 
-                    type="text" 
+                  <textarea 
                     placeholder={`Option ${String.fromCharCode(65 + idx)} content`} 
                     value={opt.text} 
                     onChange={e => handleOptionTextChange(opt.id, e.target.value)}
+                    style={{ resize: 'vertical', minHeight: '50px', padding: '0.5rem', flex: 1, fontFamily: 'inherit', fontSize: '0.9rem' }}
                     required 
+                    rows={2}
                   />
                 </div>
               ))}
@@ -640,6 +717,92 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
             </button>
           </div>
         </form>
+      </div>
+    );
+  }
+
+  if (defaultView === 'advices') {
+    return (
+      <div className="animate-fade" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+        {/* Header Panel */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h2>Question Advices Inbox</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              Review, approve, or reject cybersecurity questions proposed by standard users. Approved questions are added to the live questions pool automatically.
+            </p>
+          </div>
+          <div>
+            <button onClick={fetchQuestionsAndAdvices} className="btn btn-accent" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
+            <RefreshCw className="animate-spin" size={32} style={{ color: 'var(--color-primary)' }} />
+          </div>
+        ) : advices.length === 0 ? (
+          <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+            <AlertCircle size={48} style={{ margin: '0 auto 1rem', opacity: 0.5 }} />
+            <p style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>No proposed question advices found.</p>
+            <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem' }}>Proposals submitted by standard users will appear here for review.</p>
+          </div>
+        ) : (
+          <div className="card animate-fade" style={{ padding: 0, overflow: 'hidden' }}>
+            <table style={{ width: '100%', fontSize: '0.85rem' }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: '0.75rem 1rem' }}>Suggested By</th>
+                  <th style={{ padding: '0.75rem 1rem' }}>Domain</th>
+                  <th style={{ padding: '0.75rem 1rem' }}>Difficulty</th>
+                  <th style={{ padding: '0.75rem 1rem' }}>Points</th>
+                  <th style={{ padding: '0.75rem 1rem' }}>Question Text</th>
+                  <th style={{ padding: '0.75rem 1rem' }}>Status</th>
+                  <th style={{ padding: '0.75rem 1rem' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {advices.map(advice => (
+                  <tr key={advice.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
+                    <td style={{ fontWeight: 600, padding: '0.75rem 1rem' }}>{advice.advisor_name || 'Standard User'}</td>
+                    <td style={{ padding: '0.75rem 1rem' }}>{advice.domain}</td>
+                    <td style={{ padding: '0.75rem 1rem' }}>
+                      <span className="badge" style={getDifficultyBadgeStyle(advice.difficulty)}>
+                        {DIFFICULTY_LABELS[advice.difficulty] || advice.difficulty}
+                      </span>
+                    </td>
+                    <td style={{ fontWeight: 600, padding: '0.75rem 1rem' }}>{advice.points}p</td>
+                    <td style={{ maxWidth: '350px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.75rem 1rem' }} title={advice.question_text}>
+                      {advice.question_text}
+                    </td>
+                    <td style={{ padding: '0.75rem 1rem' }}>
+                      <span className={`badge ${advice.status === 'approved' ? 'badge-success' : advice.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
+                        {advice.status}
+                      </span>
+                    </td>
+                    <td style={{ padding: '0.75rem 1rem' }}>
+                      {advice.status === 'pending' ? (
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button onClick={() => handleApproveAdvice(advice.id)} className="btn btn-success btn-sm" style={{ padding: '0.2rem 0.4rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                            <Check size={12} /> Approve
+                          </button>
+                          <button onClick={() => handleRejectAdvice(advice.id)} className="btn btn-danger btn-sm" style={{ padding: '0.2rem 0.4rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                            <XCircle size={12} /> Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Reviewed</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     );
   }
@@ -660,17 +823,35 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
         </div>
         <div style={{ display: 'flex', gap: '0.75rem' }}>
           {!isAdviceOnly && user.role === 'admin' && (
-            <button 
-              onClick={() => {
-                setImportPreviewList([]);
-                setShowImportModal(true);
-              }} 
-              className="btn btn-accent" 
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-            >
-              <Upload size={18} />
-              <span>Bulk Import</span>
-            </button>
+            <>
+              <button 
+                onClick={handleExportQuestions}
+                className="btn btn-secondary" 
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+              >
+                <Download size={18} />
+                <span>Export JSON</span>
+              </button>
+              <button 
+                onClick={handleExportCSV}
+                className="btn btn-secondary" 
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+              >
+                <Download size={18} />
+                <span>Export CSV</span>
+              </button>
+              <button 
+                onClick={() => {
+                  setImportPreviewList([]);
+                  setShowImportModal(true);
+                }} 
+                className="btn btn-accent" 
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+              >
+                <Upload size={18} />
+                <span>Bulk Import</span>
+              </button>
+            </>
           )}
           <button onClick={onNavigateToAdd ? onNavigateToAdd : handleOpenAdd} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             {isAdviceOnly ? <Send size={18} /> : <Plus size={18} />}
@@ -684,7 +865,7 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
           
           {/* 1. Proposed Advices Inbox (Admin view) */}
-          {advices.length > 0 && (
+          {false && advices.length > 0 && (
             <div className="card animate-fade" style={{ borderLeft: '4px solid var(--color-secondary)', background: 'rgba(74, 125, 135, 0.05)', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <h3 style={{ fontSize: '1.05rem', margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <CheckCircle size={18} style={{ color: 'var(--color-secondary)' }} /> Pending Question Advices ({advices.filter(a=>a.status==='pending').length} items)
@@ -914,7 +1095,7 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
     {/* Add / Edit / Advice Modal */}
     {showModal && (
         <div className="modal-overlay">
-          <div className="modal-content animate-fade" style={{ maxWidth: '650px', maxHeight: '90vh', overflowY: 'auto' }}>
+          <div className="modal-content animate-fade" style={{ width: '90%', maxWidth: '850px', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.75rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Database size={20} style={{ color: 'var(--color-primary)' }} />
@@ -988,12 +1169,13 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
                         style={{ width: '20px', height: '20px', cursor: 'pointer', flexShrink: 0 }}
                       />
                       <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>Choice {String.fromCharCode(65 + idx)}:</span>
-                      <input 
-                        type="text" 
+                      <textarea 
                         placeholder={`Option ${String.fromCharCode(65 + idx)} content`} 
                         value={opt.text} 
                         onChange={e => handleOptionTextChange(opt.id, e.target.value)}
+                        style={{ resize: 'vertical', minHeight: '50px', padding: '0.5rem', flex: 1, fontFamily: 'inherit', fontSize: '0.9rem' }}
                         required 
+                        rows={2}
                       />
                     </div>
                   ))}

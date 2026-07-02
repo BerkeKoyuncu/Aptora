@@ -747,7 +747,7 @@ router.get('/tests', authenticateToken, async (req, res) => {
 
 // Create Test (randomized or direct selection)
 router.post('/tests', authenticateToken, async (req, res) => {
-  const { title, num_questions = 10, difficulty_distribution, domains, is_random = true, selected_questions = [] } = req.body;
+  const { title, num_questions = 10, difficulty_distribution, domains, is_random = true, selected_questions = [], duration, require_seb } = req.body;
 
   if (!title) {
     return res.status(400).json({ error: 'Test title is required' });
@@ -774,10 +774,12 @@ router.post('/tests', authenticateToken, async (req, res) => {
   const targetDist = difficulty_distribution || defaultDist;
 
   try {
+    const testDuration = parseInt(duration) || 20;
+    const testRequireSeb = require_seb === true || require_seb === 1 || require_seb === 'true' ? 1 : 0;
     // 1. Insert test meta
     const result = await db.run(
-      'INSERT INTO tests (title, created_by, num_questions, difficulty_distribution, domains, is_random) VALUES (?, ?, ?, ?, ?, ?)',
-      [title, req.user.id, num_questions, JSON.stringify(targetDist), JSON.stringify(targetDomains), is_random ? 1 : 0]
+      'INSERT INTO tests (title, created_by, num_questions, difficulty_distribution, domains, is_random, duration, require_seb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [title, req.user.id, num_questions, JSON.stringify(targetDist), JSON.stringify(targetDomains), is_random ? 1 : 0, testDuration, testRequireSeb]
     );
     const testId = result.id;
 
@@ -788,63 +790,143 @@ router.post('/tests', authenticateToken, async (req, res) => {
       // Randomized question selector based on domain & difficulty distribution
       const chosenQuestionsMap = new Map();
 
-      // Step A: Calculate how many questions we need per difficulty level
-      let allocatedCount = 0;
-      const diffTargets = {};
-      const diffKeys = ["1", "2", "3", "4", "5"];
+      // Calculate domain quotas
+      const domainsQuota = {};
+      const D = targetDomains.length;
+      const baseCount = Math.floor(num_questions / D);
+      let remainder = num_questions % D;
+      
+      targetDomains.forEach((domain, idx) => {
+        domainsQuota[domain] = baseCount + (idx < remainder ? 1 : 0);
+      });
 
+      // Calculate difficulty quotas
+      const difficultyQuota = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0 };
+      let allocatedCount = 0;
+      const diffKeys = ["1", "2", "3", "4", "5"];
       diffKeys.forEach((key) => {
         const pct = targetDist[key] !== undefined ? targetDist[key] : 0;
         const targetForLevel = Math.round(num_questions * (pct / 100));
-        diffTargets[key] = targetForLevel;
+        difficultyQuota[key] = targetForLevel;
         allocatedCount += targetForLevel;
       });
 
-      // Adjust rounding discrepancies
-      let difference = num_questions - allocatedCount;
-      if (difference !== 0) {
-        // Adjust Level 3 (the median)
-        diffTargets["3"] += difference;
-        if (diffTargets["3"] < 0) diffTargets["3"] = 0;
+      // Adjust rounding discrepancy for difficulties
+      let diffDiff = num_questions - allocatedCount;
+      if (diffDiff !== 0) {
+        difficultyQuota["3"] += diffDiff;
+        if (difficultyQuota["3"] < 0) difficultyQuota["3"] = 0;
       }
 
-      // Step B: Fetch random questions for each difficulty level
-      for (const diff of diffKeys) {
-        const countNeeded = diffTargets[diff];
-        if (countNeeded <= 0) continue;
+      // If pre-selected (hybrid mode), pull their details to populate chosenQuestionsMap
+      let pinnedQuestions = [];
+      if (selected_questions && selected_questions.length > 0) {
+        const placeholders = selected_questions.map(() => '?').join(',');
+        pinnedQuestions = await db.query(`SELECT id, difficulty, domain FROM questions WHERE id IN (${placeholders})`, selected_questions);
+        pinnedQuestions.forEach(q => {
+          chosenQuestionsMap.set(q.id, q);
 
-        // Domain binding placeholder query
-        const placeholders = targetDomains.map(() => '?').join(',');
-        const queryStr = `
-          SELECT id FROM questions 
-          WHERE difficulty = ? AND domain IN (${placeholders}) 
-          ORDER BY RANDOM() LIMIT ?
-        `;
+          // Deduct from domain quota
+          if (domainsQuota[q.domain] !== undefined && domainsQuota[q.domain] > 0) {
+            domainsQuota[q.domain]--;
+          } else {
+            // If domain is not selected or quota is 0, deduct from any domain that has quota > 0
+            const k = Object.keys(domainsQuota).find(d => domainsQuota[d] > 0);
+            if (k) domainsQuota[k]--;
+          }
 
-        const params = [parseInt(diff), ...targetDomains, countNeeded];
-        const selected = await db.query(queryStr, params);
+          // Deduct from difficulty quota
+          const diffStr = String(q.difficulty);
+          if (difficultyQuota[diffStr] > 0) {
+            difficultyQuota[diffStr]--;
+          } else {
+            const k = diffKeys.find(d => difficultyQuota[d] > 0);
+            if (k) difficultyQuota[k]--;
+          }
+        });
+      }
 
-        selected.forEach(q => chosenQuestionsMap.set(q.id, true));
-
-        // If not enough questions in this difficulty level, track deficiency
-        if (selected.length < countNeeded) {
-          console.warn(`Insufficient questions for difficulty ${diff}. Needed: ${countNeeded}, Found: ${selected.length}`);
+      // Greedy slot builder for the remaining count
+      const slots = [];
+      const remainingCount = num_questions - chosenQuestionsMap.size;
+      for (let i = 0; i < remainingCount; i++) {
+        // Find active domain with max quota
+        let bestDomain = null;
+        let maxDQuota = -1;
+        for (const d of Object.keys(domainsQuota)) {
+          if (domainsQuota[d] > maxDQuota && domainsQuota[d] > 0) {
+            maxDQuota = domainsQuota[d];
+            bestDomain = d;
+          }
         }
+
+        // Find active difficulty with max quota
+        let bestDiff = null;
+        let maxDiffQuota = -1;
+        for (const df of diffKeys) {
+          if (difficultyQuota[df] > maxDiffQuota && difficultyQuota[df] > 0) {
+            maxDiffQuota = difficultyQuota[df];
+            bestDiff = df;
+          }
+        }
+
+        if (!bestDomain || !bestDiff) break; // Quotas exhausted
+
+        slots.push({ domain: bestDomain, difficulty: parseInt(bestDiff) });
+        domainsQuota[bestDomain]--;
+        difficultyQuota[bestDiff]--;
       }
 
-      // Step C: Fallback. If total selected is less than num_questions, backfill with ANY matching questions in the domains
-      if (chosenQuestionsMap.size < num_questions) {
-        const neededBackfill = num_questions - chosenQuestionsMap.size;
-        const placeholders = targetDomains.map(() => '?').join(',');
+      // Now, fetch questions for each slot
+      for (const slot of slots) {
+        // 1. Try to find questions with exact domain & difficulty, ordered by usage_count ASC, RANDOM()
         const queryStr = `
-          SELECT id FROM questions 
-          WHERE domain IN (${placeholders}) 
-          ORDER BY RANDOM()
+          SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
+          FROM questions q
+          WHERE q.domain = ? AND q.difficulty = ?
+          ORDER BY usage_count ASC, RANDOM()
         `;
-        const allPossible = await db.query(queryStr, targetDomains);
-        for (const q of allPossible) {
-          if (chosenQuestionsMap.size >= num_questions) break;
-          chosenQuestionsMap.set(q.id, true);
+        let pool = await db.query(queryStr, [slot.domain, slot.difficulty]);
+        
+        let matchedQ = pool.find(q => !chosenQuestionsMap.has(q.id));
+        
+        // 2. Fallback A: If no exact match, relax difficulty constraint (same domain, any difficulty)
+        if (!matchedQ) {
+          const fbQuery = `
+            SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
+            FROM questions q
+            WHERE q.domain = ?
+            ORDER BY ABS(q.difficulty - ?) ASC, usage_count ASC, RANDOM()
+          `;
+          const fbPool = await db.query(fbQuery, [slot.domain, slot.difficulty]);
+          matchedQ = fbPool.find(q => !chosenQuestionsMap.has(q.id));
+        }
+
+        // 3. Fallback B: If still no match, relax domain constraint (any domain, same difficulty)
+        if (!matchedQ) {
+          const fbQuery = `
+            SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
+            FROM questions q
+            WHERE q.difficulty = ?
+            ORDER BY usage_count ASC, RANDOM()
+          `;
+          const fbPool = await db.query(fbQuery, [slot.difficulty]);
+          matchedQ = fbPool.find(q => !chosenQuestionsMap.has(q.id));
+        }
+
+        // 4. Fallback C: Grab any question
+        if (!matchedQ) {
+          const fbQuery = `
+            SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
+            FROM questions q
+            ORDER BY usage_count ASC, RANDOM()
+          `;
+          const fbPool = await db.query(fbQuery, []);
+          matchedQ = fbPool.find(q => !chosenQuestionsMap.has(q.id));
+        }
+
+        if (matchedQ) {
+          chosenQuestionsMap.set(matchedQ.id, matchedQ);
         }
       }
 
@@ -1192,7 +1274,7 @@ router.post('/sessions/create-link', authenticateToken, async (req, res) => {
 router.get('/sessions/:id', async (req, res) => {
   try {
     const session = await db.get(`
-      SELECT ts.*, t.title as test_title, t.num_questions
+      SELECT ts.*, t.title as test_title, t.num_questions, t.duration, t.require_seb
       FROM test_sessions ts
       JOIN tests t ON ts.test_id = t.id
       WHERE ts.id = ?
@@ -1213,7 +1295,10 @@ router.get('/sessions/:id', async (req, res) => {
       started_at: session.started_at,
       completed_at: session.completed_at,
       score: session.score,
-      total_points: session.total_points
+      total_points: session.total_points,
+      duration: session.duration || 20,
+      require_seb: !!session.require_seb,
+      focus_lost_count: session.focus_lost_count || 0
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1260,6 +1345,9 @@ router.post('/sessions/:id/start', async (req, res) => {
       [candidate_name, JSON.stringify(candidate_info || {}), JSON.stringify(questionsSnapshot), req.params.id]
     );
 
+    // Get test duration and SEB requirements
+    const testObj = await db.get('SELECT duration, require_seb FROM tests WHERE id = ?', [session.test_id]);
+
     // Return questions snapshot to runner, STRIPPING correct answers for cheating protection
     const sanitizedQuestions = questionsSnapshot.map(q => ({
       id: q.id,
@@ -1275,10 +1363,62 @@ router.post('/sessions/:id/start', async (req, res) => {
       candidate_name,
       candidate_email: session.candidate_email,
       status: 'active',
-      questions: sanitizedQuestions
+      questions: sanitizedQuestions,
+      duration: testObj?.duration || 20,
+      require_seb: !!testObj?.require_seb
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Log candidate focus loss / tab switching violation
+router.post('/sessions/:id/log-focus-lost', async (req, res) => {
+  try {
+    await db.run('UPDATE test_sessions SET focus_lost_count = focus_lost_count + 1 WHERE id = ?', [req.params.id]);
+    const updated = await db.get('SELECT focus_lost_count FROM test_sessions WHERE id = ?', [req.params.id]);
+    res.json({ success: true, focus_lost_count: updated.focus_lost_count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate Safe Exam Browser configuration file (.seb)
+router.get('/sessions/:id/seb-config', async (req, res) => {
+  try {
+    const session = await db.get('SELECT id FROM test_sessions WHERE id = ?', [req.params.id]);
+    if (!session) {
+      return res.status(404).send('Session not found');
+    }
+    
+    const host = req.get('host') || 'localhost:9372';
+    const protocol = req.secure ? 'https' : 'http';
+    const startUrl = `${protocol}://${host}/#/session/${session.id}`;
+
+    const sebXml = `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>startURL</key>
+    <string>${startUrl}</string>
+    <key>sendBrowserExamKey</key>
+    <true/>
+    <key>allowPreferencesWindow</key>
+    <false/>
+    <key>browserWindowAllowNewWindows</key>
+    <true/>
+    <key>allowQuit</key>
+    <true/>
+    <key>quitURL</key>
+    <string>${protocol}://${host}/#/results/${session.id}</string>
+  </dict>
+</plist>`;
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename=aptora_exam_${session.id}.seb`);
+    res.send(sebXml);
+  } catch (err) {
+    res.status(500).send(err.message);
   }
 });
 
@@ -1411,7 +1551,7 @@ router.post('/sessions/:id/submit', async (req, res) => {
 router.get('/sessions/:id/results', async (req, res) => {
   try {
     const session = await db.get(`
-      SELECT ts.*, t.title as test_title
+      SELECT ts.*, t.title as test_title, t.require_seb
       FROM test_sessions ts
       JOIN tests t ON ts.test_id = t.id
       WHERE ts.id = ?
@@ -1480,7 +1620,9 @@ router.get('/sessions/:id/results', async (req, res) => {
       total_points: session.total_points,
       percentage: session.total_points > 0 ? parseFloat(((session.score / session.total_points) * 100).toFixed(1)) : 0,
       domainSuccessRates: domainSuccessMap,
-      feedback
+      feedback,
+      require_seb: !!session.require_seb,
+      focus_lost_count: session.focus_lost_count || 0
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1496,7 +1638,7 @@ router.get('/sessions', authenticateToken, async (req, res) => {
 
     if (req.user.role === 'admin') {
       queryStr = `
-        SELECT ts.id, ts.candidate_email, ts.candidate_name, ts.started_at, ts.completed_at, ts.score, ts.total_points, ts.status, t.title as test_title, u.username as creator_name
+        SELECT ts.id, ts.candidate_email, ts.candidate_name, ts.started_at, ts.completed_at, ts.score, ts.total_points, ts.status, ts.focus_lost_count, t.title as test_title, t.require_seb, u.username as creator_name
         FROM test_sessions ts
         JOIN tests t ON ts.test_id = t.id
         JOIN users u ON t.created_by = u.id
@@ -1504,7 +1646,7 @@ router.get('/sessions', authenticateToken, async (req, res) => {
       `;
     } else {
       queryStr = `
-        SELECT ts.id, ts.candidate_email, ts.candidate_name, ts.started_at, ts.completed_at, ts.score, ts.total_points, ts.status, t.title as test_title, u.username as creator_name
+        SELECT ts.id, ts.candidate_email, ts.candidate_name, ts.started_at, ts.completed_at, ts.score, ts.total_points, ts.status, ts.focus_lost_count, t.title as test_title, t.require_seb, u.username as creator_name
         FROM test_sessions ts
         JOIN tests t ON ts.test_id = t.id
         JOIN users u ON t.created_by = u.id

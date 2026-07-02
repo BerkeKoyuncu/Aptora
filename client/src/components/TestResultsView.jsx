@@ -189,6 +189,15 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
               ({passed ? 'PASSED' : 'RE-AUDIT NEEDED'})
             </span>
           </div>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>SECURITY LOGGER</div>
+            <div style={{ fontSize: '0.85rem', color: results.focus_lost_count > 0 ? 'var(--color-error)' : 'var(--color-success)', fontWeight: 700, marginTop: '0.2rem' }}>
+              {results.focus_lost_count > 0 ? `⚠️ ${results.focus_lost_count} Tab switches` : '🛡️ Safe Focus (0 switches)'}
+            </div>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+              {results.require_seb ? 'Safe Exam Browser enforced' : 'Standard Web Environment'}
+            </span>
+          </div>
         </div>
 
         {/* Domain success list (visual breakdown) */}

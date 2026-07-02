@@ -70,7 +70,7 @@ export default function UserDashboard({ user, addToast, onInviteCandidate }) {
 
   const copyInviteLink = () => {
     if (!inviteResult) return;
-    navigator.clipboard.writeText(inviteResult.testLink);
+    api.copyText(inviteResult.testLink);
     addToast('Invitation link copied to clipboard!');
   };
 
