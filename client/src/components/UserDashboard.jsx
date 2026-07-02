@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { History, FileText, Award, Shield, Plus, Mail, Copy, ExternalLink, RefreshCw } from 'lucide-react';
+import { History, FileText, Award, Shield, Plus, Mail, Copy, ExternalLink, RefreshCw, X, CheckCircle } from 'lucide-react';
 
 export default function UserDashboard({ user, addToast, onInviteCandidate }) {
   const [metrics, setMetrics] = useState({

@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
-const { JWT_SECRET, authenticateToken, requireRole, generate2FASecret, verify2FACode } = require('./auth');
+const { JWT_SECRET, authenticateToken, requireRole, generate2FASecret, verify2FACode, encrypt, decrypt } = require('./auth');
 
 const router = express.Router();
 const nodemailer = require('nodemailer');
@@ -31,7 +31,7 @@ async function sendRealEmail(to, subject, text, html) {
       secure: config.smtp_secure === 1,
       auth: {
         user: config.smtp_user,
-        pass: config.smtp_pass
+        pass: decrypt(config.smtp_pass)
       },
       tls: {
         rejectUnauthorized: false
@@ -138,7 +138,7 @@ router.post('/auth/verify-2fa', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const isValid = verify2FACode(code, user.twofa_secret);
+    const isValid = verify2FACode(code, decrypt(user.twofa_secret));
     if (!isValid) {
       return res.status(400).json({ error: 'Invalid 2FA verification code' });
     }
@@ -170,7 +170,7 @@ router.post('/auth/setup-2fa', authenticateToken, async (req, res) => {
 
     const { secret, qrCodeUrl } = await generate2FASecret(user.email);
     // Temporarily save secret in DB, but don't set enabled yet
-    await db.run('UPDATE users SET twofa_secret = ? WHERE id = ?', [secret, req.user.id]);
+    await db.run('UPDATE users SET twofa_secret = ? WHERE id = ?', [encrypt(secret), req.user.id]);
 
     res.json({ secret, qrCodeUrl });
   } catch (err) {
@@ -191,7 +191,7 @@ router.post('/auth/confirm-2fa', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: '2FA has not been set up. Initiate setup first.' });
     }
 
-    const isValid = verify2FACode(code, user.twofa_secret);
+    const isValid = verify2FACode(code, decrypt(user.twofa_secret));
     if (!isValid) {
       return res.status(400).json({ error: 'Invalid code. Verification failed.' });
     }
@@ -214,7 +214,7 @@ router.post('/auth/disable-2fa', authenticateToken, async (req, res) => {
     }
 
     if (code) {
-      const isValid = verify2FACode(code, user.twofa_secret);
+      const isValid = verify2FACode(code, decrypt(user.twofa_secret));
       if (!isValid) {
         return res.status(400).json({ error: 'Invalid 2FA code' });
       }
@@ -995,7 +995,7 @@ router.get('/admin/email-settings', authenticateToken, async (req, res) => {
     // Mask password if it exists
     const clientConfig = {
       ...config,
-      smtp_pass: config.smtp_pass ? '••••••••' : '',
+      smtp_pass: decrypt(config.smtp_pass) ? '••••••••' : '',
       smtp_secure: !!config.smtp_secure,
       is_enabled: !!config.is_enabled
     };
@@ -1020,6 +1020,8 @@ router.post('/admin/email-settings', authenticateToken, async (req, res) => {
     let passwordToSave = smtp_pass;
     if (smtp_pass === '••••••••') {
       passwordToSave = existing ? existing.smtp_pass : '';
+    } else if (smtp_pass) {
+      passwordToSave = encrypt(smtp_pass);
     }
 
     const host = smtp_host || 'smtp.gmail.com';
@@ -1074,7 +1076,7 @@ router.post('/admin/email-settings/test', authenticateToken, async (req, res) =>
       secure: config.smtp_secure === 1,
       auth: {
         user: config.smtp_user,
-        pass: config.smtp_pass
+        pass: decrypt(config.smtp_pass)
       },
       tls: {
         rejectUnauthorized: false

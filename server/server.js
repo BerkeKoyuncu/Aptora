@@ -5,7 +5,7 @@ const { initDb } = require('./db');
 const routes = require('./routes');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 9372;
 
 // Enable CORS
 app.use(cors());
