@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
+import EDataBranding from './EDataBranding';
 import { Printer, Download, ArrowLeft, RefreshCw, Award, Clock, BookOpen, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
 
 const DIFFICULTY_LABELS = { 1: 'Beginner', 2: 'Elementary', 3: 'Intermediate', 4: 'Advanced', 5: 'Expert' };
+const csvCell = (value) => {
+  let text = String(value ?? '');
+  if (/^\s*[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+};
 
 const getDifficultyBadgeStyle = (diff) => {
   const styles = {
@@ -15,15 +21,28 @@ const getDifficultyBadgeStyle = (diff) => {
   return styles[diff] || { backgroundColor: 'var(--color-border)', color: 'var(--text-secondary)' };
 };
 
-export default function TestResultsView({ sessionId, addToast, onBackToDashboard }) {
-  const [results, setResults] = useState(null);
-  const [loading, setLoading] = useState(true);
+export default function TestResultsView({
+  sessionId,
+  addToast,
+  onBackToDashboard,
+  adminView = false,
+  initialResults = null,
+  candidateView = false
+}) {
+  const [results, setResults] = useState(initialResults);
+  const [loading, setLoading] = useState(!initialResults);
 
   useEffect(() => {
+    if (initialResults) {
+      setResults(initialResults);
+      setLoading(false);
+      return;
+    }
     const fetchResults = async () => {
       try {
         setLoading(true);
-        const data = await api.getSessionResults(sessionId);
+        if (!adminView) throw new Error('Administrator access is required to view assessment results.');
+        const data = await api.getAdminSessionResults(sessionId);
         setResults(data);
       } catch (err) {
         addToast(err.message, 'error');
@@ -32,7 +51,7 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
       }
     };
     fetchResults();
-  }, [sessionId]);
+  }, [sessionId, adminView, initialResults]);
 
   const handlePrint = () => {
     window.print();
@@ -44,9 +63,9 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
     // Header info
     let csvContent = "data:text/csv;charset=utf-8,";
     csvContent += "APTORA ASSESSMENT SCORECARD REPORT\n";
-    csvContent += `Assessment:,"${results.test_title}"\n`;
-    csvContent += `Candidate:,"${results.candidate_name}"\n`;
-    csvContent += `Email:,"${results.candidate_email}"\n`;
+    csvContent += "Developed by E-Data Teknoloji\n";
+    csvContent += `Candidate:,${csvCell(results.candidate_name)}\n`;
+    csvContent += `Email:,${csvCell(results.candidate_email)}\n`;
     csvContent += `Date Completed:,${new Date(results.completed_at).toLocaleString()}\n`;
     csvContent += `Total Score:,${results.percentage} / 100\n\n`;
 
@@ -55,26 +74,27 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
     csvContent += "Domain,Possible Points,Scored Points,Success Rate (%)\n";
     Object.keys(results.domainSuccessRates).forEach(domain => {
       const dStats = results.domainSuccessRates[domain];
-      csvContent += `"${domain}",${dStats.possible},${dStats.scored},${dStats.successRate}%\n`;
+      csvContent += `${csvCell(domain)},${dStats.possible},${dStats.scored},${dStats.successRate}%\n`;
     });
     csvContent += "\n";
 
-    // Detailed responses header
-    csvContent += "QUESTION LEVEL RESPONSES AUDIT LOG\n";
-    csvContent += "Question Number,Domain,Points,Difficulty,Evaluation,Selected Choice,Correct Choice,Question Text\n";
-    results.feedback.forEach((q, idx) => {
-      const selectedOptText = q.options.find(o => o.id === q.selectedOptionId)?.text || "Skipped";
-      const correctOptText = q.options.find(o => o.id === q.correctOptionId)?.text || "";
-      const evaluation = q.isCorrect ? "CORRECT" : "INCORRECT";
-      
-      csvContent += `${idx + 1},"${q.domain}",${q.points},${DIFFICULTY_LABELS[q.difficulty] || q.difficulty},${evaluation},"${selectedOptText.replace(/"/g, '""')}"` +
-                    `,"${correctOptText.replace(/"/g, '""')}","${q.question_text.replace(/"/g, '""')}"\n`;
-    });
+    if (Array.isArray(results.feedback)) {
+      csvContent += "QUESTION LEVEL RESPONSES AUDIT LOG\n";
+      csvContent += "Question Number,Domain,Points,Difficulty,Evaluation,Selected Choice,Correct Choice,Question Text\n";
+      results.feedback.forEach((q, idx) => {
+        const selectedOptText = q.options.find(o => String(o.id) === String(q.selectedOptionId))?.text || "Skipped";
+        const correctOptText = q.options.find(o => String(o.id) === String(q.correctOptionId))?.text || "";
+        const evaluation = q.isCorrect ? "CORRECT" : "INCORRECT";
+        csvContent += `${idx + 1},${csvCell(q.domain)},${q.points},${DIFFICULTY_LABELS[q.difficulty] || q.difficulty},${evaluation},${csvCell(selectedOptText)}` +
+                      `,${csvCell(correctOptText)},${csvCell(q.question_text)}\n`;
+      });
+    }
 
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    const filename = `scorecard_${results.candidate_name.replace(/\s+/g, '_')}_${results.id.substring(0, 6)}.csv`;
+    const safeCandidate = results.candidate_name.replace(/[^a-z0-9_-]+/gi, '_').slice(0, 60) || 'candidate';
+    const filename = `scorecard_${safeCandidate}_${results.id.substring(0, 6)}.csv`;
     link.setAttribute("download", filename);
     document.body.appendChild(link);
     link.click();
@@ -117,10 +137,12 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
       
       {/* Top action controls */}
       <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <button onClick={onBackToDashboard} className="btn btn-accent" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-          <ArrowLeft size={16} />
-          <span>Back to Portal</span>
-        </button>
+        {onBackToDashboard ? (
+          <button onClick={onBackToDashboard} className="btn btn-accent" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <ArrowLeft size={16} />
+            <span>Back to Portal</span>
+          </button>
+        ) : <span />}
 
         <div style={{ display: 'flex', gap: '0.75rem' }}>
           <button onClick={handleExportCSV} className="btn btn-accent" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -134,19 +156,32 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
         </div>
       </div>
 
+      {candidateView && (
+        <div className="card no-print" style={{ borderLeft: '4px solid var(--color-success)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+          Your test is complete and your temporary login account has been removed. You can review, print, or export this result while this page remains open.
+        </div>
+      )}
+
       {/* Main Scorecard Sheet */}
       <div className="glass-panel" style={{ padding: '3rem', background: 'white', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
         
         {/* Print Brand Header (Hidden in UI by CSS classes, but shown in print layout) */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid var(--color-primary)', paddingBottom: '1rem' }}>
-          <div>
-            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-secondary)', letterSpacing: '0.1em' }}>APTORA TESTING REPORT</span>
-            <h1 style={{ margin: '0.2rem 0', fontSize: '2rem' }}>{results.test_title}</h1>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              Cybersecurity and Network Engineering Competency Assessment Verification
-            </p>
+        <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '2px solid var(--color-primary)', paddingBottom: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.9rem' }}>
+              <img src="/aptora-icon-black.svg" alt="Aptora" style={{ width: '60px', height: '60px', display: 'block', objectFit: 'contain' }} />
+              <span style={{ color: '#000000', fontSize: '1.6rem', fontWeight: 900, letterSpacing: '0.1em' }}>APTORA</span>
+            </div>
+            <EDataBranding variant="light" large showText={false} />
           </div>
-          <div style={{ textAlign: 'right' }}>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '2rem', marginTop: '1.25rem' }}>
+            <div>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-secondary)', letterSpacing: '0.1em' }}>APTORA TESTING REPORT</span>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', margin: '0.3rem 0 0' }}>
+                Cybersecurity and Network Engineering Competency Assessment Verification
+              </p>
+            </div>
             <span className={`badge ${passed ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: '1rem', padding: '0.5rem 1rem' }}>
               {passed ? 'PASSED' : 'RE-AUDIT NEEDED'}
             </span>
@@ -159,15 +194,6 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>CANDIDATE</div>
             <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '1.05rem' }}>{results.candidate_name}</div>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{results.candidate_email}</div>
-          </div>
-          <div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>METRICS SUMMARY</div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Dep: <strong>{results.candidate_info?.department || 'N/A'}</strong>
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Title: <strong>{results.candidate_info?.jobTitle || 'N/A'}</strong>
-            </div>
           </div>
           <div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>DURATION TIME</div>
@@ -234,7 +260,8 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
           </div>
         </div>
 
-        {/* Detailed Question Review Audit */}
+        {/* Detailed question review for both candidate and administrator reports. */}
+        {Array.isArray(results.feedback) && (
         <div className="print-page-break" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <h3 style={{ fontSize: '1.1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>
             Question Audit Log
@@ -271,7 +298,7 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
                 {/* Grid of options showing candidate selection vs correct key */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   {q.options.map(opt => {
-                    const isCandidateChoice = q.selectedOptionId === opt.id;
+                    const isCandidateChoice = q.selectedOptionId != null && String(q.selectedOptionId) === String(opt.id);
                     const isCorrectChoice = opt.isCorrect;
                     
                     let bg = 'transparent';
@@ -324,6 +351,7 @@ export default function TestResultsView({ sessionId, addToast, onBackToDashboard
             ))}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

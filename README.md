@@ -25,7 +25,9 @@ Aptora is a premium, secure monorepo application designed to manage automated ex
   - **Virtual Mailbox Outbox** (Simulated e-mail logs clean up)
 
 ### 4. Security & Authentication
-- **RBAC Privileges**: Separate Admin and Standard User actions.
+- **Temporary Candidate Accounts**: Administrators create candidate access with an email address and freely chosen password, and can review or update active credentials from execution history. Candidates sign in from the standard login page, can review detailed results immediately after submission, and then their account is removed while the result remains available to administrators.
+- **Per-Administrator SMTP**: Every administrator maintains an independent SMTP configuration.
+- **Candidate Email Delivery**: Creating candidate access generates a separate E-Data subject and an editable Arial email body containing credentials, dynamic assessment instructions, and a generic session-link placeholder. After replacing the placeholder, the administrator can send it through their own SMTP configuration; the HTML email includes the standard color E-Data logo.
 - **Two-Factor Authentication (2FA)**: Standard TOTP activation via QR code for Microsoft/Google Authenticator integration.
 
 ---
@@ -57,7 +59,7 @@ Aptora/
 ## 📦 Database Advantage (Zero Setup)
 Aptora uses **SQLite3** as its database engine.
 - **No MySQL, PostgreSQL, or SQL Server installation required.**
-- The database is stored in a single file (`server/database.sqlite`) which is automatically created, schema-mapped, and configured with your custom administrative user during the installation setup.
+- The Windows server installer stores the database in `%ProgramData%\Aptora\database.sqlite`; it is created and schema-mapped automatically during first-time setup.
 
 ---
 
@@ -119,29 +121,25 @@ Aptora requires Node.js v16 or newer (v18 or v20 is recommended).
 
 ## ⚡ Windows Setup.exe Installer Compilation & Setup
 
-To distribute the application as a single **`AptoraSetup.exe`** wizard for Windows users:
+`AptoraSetup.exe` is an offline, single-file deployment package for the Windows server. Candidate computers do not install Aptora; candidates use the standard Aptora login page (and Safe Exam Browser when a session requires it).
 
 ### How to Create `AptoraSetup.exe` (For Developers):
-1. Download and install **Inno Setup 6** (free compiler tool) from [Inno Setup Download Page](https://jrsoftware.org/isdl.php).
-2. Double-click the **`build-installer.bat`** script in the project root.
-3. The script will automatically trigger Inno Setup to pack the application source code and scripts into a single compiled installer named **`AptoraSetup.exe`** at the project root.
-4. When you make code updates, simply run `build-installer.bat` again to output the updated installer file.
+1. On the build computer, install Node.js 20.17 or newer and **Inno Setup 6**.
+2. Run **`build-installer.bat`** in the project root while internet access is available for dependency installation.
+3. The builder performs clean production dependency installation, builds the client, bundles the exact Node runtime and native SQLite module, then creates **`AptoraSetup.exe`** in the project root.
+4. Re-run the builder after code or dependency changes. The destination server does not need Node.js, npm, Git, a database server, or internet access for package installation.
 
 ---
 
 ### How to Install & Run (For Users / Servers):
-1. Copy the compiled **`AptoraSetup.exe`** file to the destination computer/server and run it.
-2. The installation wizard will guide you through choosing a destination directory (e.g. `C:\Program Files\Aptora`).
-3. **Auto-Post-Installation**: After copying files, a Command Prompt window will launch to:
-   - Initialize the fresh SQLite database.
-   - Run the custom interactive setup to configure your **Admin Username**, **Admin Email**, and **Admin Password** with forced 2FA security.
-4. **Desktop Shortcuts Created**:
-   - 🖥️ **Aptora Application**: Instantly opens `http://localhost:9372` in your default browser.
-   - ⚙️ **Aptora Control Panel**: Opens a lightweight service control utility.
-5. **Aptora Control Panel Features**:
-   - **Start/Stop Server**: Run Node backend silently in the background (via VBScript to hide console windows) or terminate the process.
-   - **Auto-Start on Logon**: Enable/disable automatic silent startup of the server when Windows boots up or wakes up.
-   - **Diagnose status**: View real-time online/offline server port status.
+1. Give the Windows server a fixed/reachable IP address.
+2. Copy **`AptoraSetup.exe`** to the Windows server and run it as Administrator.
+3. Setup detects the active server IPv4 address automatically and configures `http://SERVER_IP:9372`.
+4. Create the first administrator. This is the first interactive screen. Setup displays a QR code, and it will not create the account until a valid current authenticator code is entered.
+5. Setup generates production secrets, secures `%ProgramData%\Aptora`, creates the SQLite database, opens TCP 9372 in Windows Firewall, installs the automatic startup task, and starts the application on `0.0.0.0:9372`.
+6. Use **Aptora Control Panel** to start, stop, restart, open the public URL, enable/disable startup, reset an administrator password or 2FA, and open logs.
+
+Application updates preserve `%ProgramData%\Aptora`. Uninstall also leaves that directory intact so the database, configuration, and logs are not accidentally destroyed. The installer removes its Windows Firewall rule on uninstall. Router/NAT forwarding, upstream firewall policy, OS patching, backups, and optional future DNS/TLS configuration remain server-infrastructure responsibilities.
 
 ---
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { FileText, RefreshCw, Mail, CheckCircle, Trash2, Copy, Play } from 'lucide-react';
+import { FileText, RefreshCw, Mail, CheckCircle, Trash2, Play, Copy, Send } from 'lucide-react';
 
 export default function TestHistory({ user, addToast }) {
   const [tests, setTests] = useState([]);
@@ -10,8 +10,10 @@ export default function TestHistory({ user, addToast }) {
   // Invitation workflow states
   const [selectedTest, setSelectedTest] = useState(null);
   const [candidateEmail, setCandidateEmail] = useState('');
+  const [candidatePassword, setCandidatePassword] = useState('');
   const [inviteResult, setInviteResult] = useState(null);
   const [inviting, setInviting] = useState(false);
+  const [sendingCandidateEmail, setSendingCandidateEmail] = useState(false);
 
   const fetchTests = async () => {
     try {
@@ -85,9 +87,9 @@ export default function TestHistory({ user, addToast }) {
 
     try {
       setInviting(true);
-      const result = await api.createSessionLink(selectedTest.id, candidateEmail);
+      const result = await api.createCandidateSession(selectedTest.id, candidateEmail, candidatePassword);
       setInviteResult(result);
-      addToast(`Invitation link created for ${candidateEmail}`);
+      addToast(`Temporary candidate account created for ${candidateEmail}`);
     } catch (err) {
       addToast(err.message, 'error');
     } finally {
@@ -95,10 +97,45 @@ export default function TestHistory({ user, addToast }) {
     }
   };
 
-  const copyInviteLink = () => {
-    if (!inviteResult) return;
-    api.copyText(inviteResult.testLink);
-    addToast('Invitation link copied to clipboard!');
+  const copyEmailTemplate = async () => {
+    if (!inviteResult?.emailTemplate) return;
+    try {
+      await api.copyText(inviteResult.emailTemplate);
+      addToast('Candidate email text copied to clipboard.');
+    } catch {
+      addToast('Email text could not be copied.', 'error');
+    }
+  };
+
+  const copyEmailSubject = async () => {
+    if (!inviteResult?.emailSubject) return;
+    try {
+      await api.copyText(inviteResult.emailSubject);
+      addToast('Email subject copied to clipboard.');
+    } catch {
+      addToast('Email subject could not be copied.', 'error');
+    }
+  };
+
+  const sendCandidateEmail = async () => {
+    if (!inviteResult?.emailSubject || !inviteResult?.emailTemplate) return;
+    if (inviteResult.emailTemplate.includes(inviteResult.sessionLinkPlaceholder)) {
+      addToast('Replace the session-link placeholder before sending.', 'warning');
+      return;
+    }
+    try {
+      setSendingCandidateEmail(true);
+      const result = await api.sendCandidateEmail(
+        inviteResult.candidateEmail || candidateEmail,
+        inviteResult.emailSubject,
+        inviteResult.emailTemplate
+      );
+      addToast(result.message);
+    } catch (err) {
+      addToast(err.message, 'error');
+    } finally {
+      setSendingCandidateEmail(false);
+    }
   };
 
   if (loading) {
@@ -116,7 +153,7 @@ export default function TestHistory({ user, addToast }) {
         <div>
           <h2>Test Configurations</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            Review created test configurations, regenerate question drafts, or invite candidate sessions.
+            Review created test configurations, regenerate question drafts, or create candidate access.
           </p>
         </div>
         <button onClick={fetchTests} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -251,7 +288,7 @@ export default function TestHistory({ user, addToast }) {
         {selectedTest && (
           <div className="card animate-fade" style={{ background: 'var(--color-card)', display: 'flex', flexDirection: 'column', gap: '1.25rem', position: 'sticky', top: '2rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.5rem' }}>
-              <h3 style={{ fontSize: '1rem', margin: 0 }}>Invite to Test</h3>
+              <h3 style={{ fontSize: '1rem', margin: 0 }}>Create Candidate Access</h3>
               <button onClick={() => setSelectedTest(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.8rem' }}>Close</button>
             </div>
             
@@ -271,8 +308,18 @@ export default function TestHistory({ user, addToast }) {
                     required 
                   />
                 </div>
+                <div>
+                  <label style={{ fontSize: '0.75rem' }}>Temporary Password</label>
+                  <input
+                    type="password"
+                    placeholder="Set a strong temporary password"
+                    value={candidatePassword}
+                    onChange={e => setCandidatePassword(e.target.value)}
+                    required
+                  />
+                </div>
                 <button type="submit" className="btn btn-primary btn-sm" style={{ width: '100%' }} disabled={inviting}>
-                  {inviting ? 'Generating Link...' : 'Generate Access Link'}
+                  {inviting ? 'Creating Account...' : 'Create Candidate Account'}
                 </button>
               </form>
             ) : (
@@ -280,27 +327,50 @@ export default function TestHistory({ user, addToast }) {
                 <div style={{ borderLeft: '4px solid var(--color-success)', background: 'rgba(46, 125, 50, 0.05)', padding: '0.5rem', borderRadius: '4px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--color-success)', fontWeight: 600, fontSize: '0.8rem' }}>
                     <CheckCircle size={14} />
-                    <span>Link Generated</span>
+                    <span>Candidate Account Created</span>
+                  </div>
+                </div>
+
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', margin: 0 }}>
+                  Add the session link to the generated template, then send it to the candidate.
+                </p>
+
+                <div>
+                  <label style={{ fontSize: '0.75rem' }}>Email Subject</label>
+                  <div style={{ display: 'flex', gap: '0.35rem' }}>
+                    <input
+                      type="text"
+                      value={inviteResult.emailSubject || ''}
+                      onChange={event => setInviteResult(current => ({ ...current, emailSubject: event.target.value }))}
+                    />
+                    <button onClick={copyEmailSubject} className="btn btn-secondary btn-sm" title="Copy email subject" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <Copy size={14} />
+                    </button>
                   </div>
                 </div>
 
                 <div>
-                  <label style={{ fontSize: '0.75rem' }}>Access Link</label>
-                  <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.25rem' }}>
-                    <input 
-                      type="text" 
-                      readOnly 
-                      value={inviteResult.testLink} 
-                      style={{ background: 'var(--color-panel)', fontSize: '0.75rem', padding: '0.4rem', border: '1px solid var(--color-border)', borderRadius: '4px' }} 
-                    />
-                    <button onClick={copyInviteLink} className="btn btn-secondary btn-sm" style={{ padding: '0.4rem' }}>
-                      <Copy size={14} />
-                    </button>
-                  </div>
-                  <small style={{ color: 'var(--text-muted)', fontSize: '0.7rem', display: 'block', marginTop: '0.5rem' }}>
-                    Copy this link and send it to the candidate. They can take the test immediately.
+                  <label style={{ fontSize: '0.75rem' }}>Candidate Email Template</label>
+                  <textarea
+                    value={inviteResult.emailTemplate || ''}
+                    onChange={event => setInviteResult(current => ({ ...current, emailTemplate: event.target.value }))}
+                    rows={18}
+                    style={{ width: '100%', resize: 'vertical', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '0.8rem', lineHeight: 1.45 }}
+                  />
+                  <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '0.4rem' }}>
+                    Replace {inviteResult.sessionLinkPlaceholder} with the session link before sending.
+                    The delivered HTML email includes the standard color E-Data logo.
                   </small>
                 </div>
+
+                <button onClick={copyEmailTemplate} className="btn btn-primary btn-sm" style={{ width: '100%', display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: '0.35rem' }}>
+                  <Copy size={14} />
+                  Copy Email Text
+                </button>
+                <button onClick={sendCandidateEmail} className="btn btn-secondary btn-sm" disabled={sendingCandidateEmail} style={{ width: '100%', display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: '0.35rem' }}>
+                  {sendingCandidateEmail ? <RefreshCw className="animate-spin" size={14} /> : <Send size={14} />}
+                  {sendingCandidateEmail ? 'Sending...' : 'Send Email'}
+                </button>
               </div>
             )}
           </div>

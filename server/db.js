@@ -1,8 +1,11 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 
-const dbPath = path.join(__dirname, 'database.sqlite');
+const dataDir = process.env.APTORA_DATA_DIR || __dirname;
+fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = path.join(dataDir, 'database.sqlite');
 const db = new sqlite3.Database(dbPath);
 
 // Wrap sqlite3 in Promises for async/await usage
@@ -45,12 +48,21 @@ const initDb = async () => {
       username TEXT UNIQUE NOT NULL,
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('admin', 'standard')),
+      role TEXT NOT NULL DEFAULT 'admin' CHECK(role = 'admin'),
       twofa_secret TEXT,
       twofa_enabled INTEGER DEFAULT 0,
+      must_setup_2fa INTEGER NOT NULL DEFAULT 1,
+      token_version INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  for (const migration of [
+    `ALTER TABLE users ADD COLUMN must_setup_2fa INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`
+  ]) {
+    try { await run(migration); } catch { /* Column already exists */ }
+  }
 
   // Create Questions table
   await run(`
@@ -132,25 +144,55 @@ const initDb = async () => {
       responses TEXT, -- JSON object of responses
       questions_snapshot TEXT, -- JSON copy of questions at creation
       focus_lost_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME,
+      result_expires_at DATETIME,
+      seb_config_key TEXT,
       FOREIGN KEY(test_id) REFERENCES tests(id) ON DELETE CASCADE
     )
   `);
 
-  // Create QuestionAdvices table
+  for (const migration of [
+    `ALTER TABLE test_sessions ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE test_sessions ADD COLUMN expires_at DATETIME`,
+    `ALTER TABLE test_sessions ADD COLUMN result_expires_at DATETIME`,
+    `ALTER TABLE test_sessions ADD COLUMN seb_config_key TEXT`
+  ]) {
+    try { await run(migration); } catch { /* Column already exists */ }
+  }
+
+  // Candidate credentials are deliberately separate from administrator users.
+  // The account is deleted after submission while its test_session remains as history.
   await run(`
-    CREATE TABLE IF NOT EXISTS question_advices (
+    CREATE TABLE IF NOT EXISTS candidate_accounts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      advised_by INTEGER NOT NULL,
-      domain TEXT NOT NULL,
-      difficulty INTEGER NOT NULL CHECK(difficulty BETWEEN 1 AND 5),
-      points INTEGER NOT NULL,
-      question_text TEXT NOT NULL,
-      options TEXT NOT NULL, -- JSON string
-      status TEXT CHECK(status IN ('pending', 'approved', 'rejected')) DEFAULT 'pending',
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_encrypted TEXT,
+      session_id TEXT UNIQUE NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(advised_by) REFERENCES users(id) ON DELETE CASCADE
+      FOREIGN KEY(session_id) REFERENCES test_sessions(id) ON DELETE CASCADE
     )
   `);
+  try { await run(`ALTER TABLE candidate_accounts ADD COLUMN password_encrypted TEXT`); } catch { /* Column already exists */ }
+  await run(`CREATE INDEX IF NOT EXISTS idx_candidate_accounts_session ON candidate_accounts(session_id)`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS security_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_user_id INTEGER,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      ip_address TEXT,
+      user_agent TEXT,
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON security_audit_logs(created_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON test_sessions(expires_at)`);
 
   // Create SimulatedEmails table
   await run(`
@@ -159,32 +201,49 @@ const initDb = async () => {
       to_email TEXT NOT NULL,
       subject TEXT NOT NULL,
       link TEXT NOT NULL,
-      sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      body_text TEXT,
+      sender_user_id INTEGER,
+      delivery_status TEXT DEFAULT 'sent',
+      message_id TEXT,
+      sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(sender_user_id) REFERENCES users(id) ON DELETE SET NULL
     )
   `);
+  for (const migration of [
+    `ALTER TABLE simulated_emails ADD COLUMN body_text TEXT`,
+    `ALTER TABLE simulated_emails ADD COLUMN sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`,
+    `ALTER TABLE simulated_emails ADD COLUMN delivery_status TEXT DEFAULT 'sent'`,
+    `ALTER TABLE simulated_emails ADD COLUMN message_id TEXT`
+  ]) {
+    try { await run(migration); } catch { /* Column already exists */ }
+  }
 
   // Create EmailSettings table
   await run(`
     CREATE TABLE IF NOT EXISTS email_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER UNIQUE,
       smtp_host TEXT,
       smtp_port INTEGER,
       smtp_user TEXT,
       smtp_pass TEXT,
       from_email TEXT,
       smtp_secure INTEGER DEFAULT 0,
-      is_enabled INTEGER DEFAULT 0
+      is_enabled INTEGER DEFAULT 0,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
-
-  // Seed default email settings if empty
-  const settingsCount = await get(`SELECT COUNT(*) as count FROM email_settings`);
-  if (settingsCount.count === 0) {
-    await run(`
-      INSERT INTO email_settings (smtp_host, smtp_port, smtp_user, smtp_pass, from_email, smtp_secure, is_enabled)
-      VALUES ('smtp.gmail.com', 587, '', '', 'noreply@aptora.com', 0, 0)
-    `);
-  }
+  try {
+    await run(`ALTER TABLE email_settings ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE`);
+  } catch { /* Column already exists */ }
+  // Preserve a legacy global SMTP configuration by assigning it to the earliest admin.
+  await run(`
+    UPDATE email_settings
+    SET user_id = (SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1)
+    WHERE id = (SELECT MIN(id) FROM email_settings WHERE user_id IS NULL)
+      AND EXISTS (SELECT 1 FROM users)
+  `);
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_settings_user_id ON email_settings(user_id)`);
 
   // Default users auto-seeding removed as users are managed via CLI script
 

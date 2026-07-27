@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import { Shield, Clock, ArrowLeft, ArrowRight, CheckCircle, RefreshCw, UserCheck, AlertTriangle, Sun, Moon, Download } from 'lucide-react';
+import EDataBranding from './EDataBranding';
+import TestResultsView from './TestResultsView';
 
-export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode }) {
+export default function TestRunner({ addToast, darkMode, setDarkMode }) {
   const [sessionInfo, setSessionInfo] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -11,32 +13,30 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
 
   // Registration States
   const [candidateName, setCandidateName] = useState('');
-  const [department, setDepartment] = useState('');
-  const [jobTitle, setJobTitle] = useState('');
 
   // Exam taking state
   const [timeLeft, setTimeLeft] = useState(1200); // Default placeholder
   const [isExamActive, setIsExamActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [completedResults, setCompletedResults] = useState(null);
 
   // Load session meta details
   useEffect(() => {
     const loadSession = async () => {
       try {
         setLoading(true);
-        const info = await api.getSessionInfo(sessionId);
+        const info = await api.getSessionInfo();
         setSessionInfo(info);
         
         if (info.status === 'active') {
           // Re-load questions if candidate refreshed page mid-test
-          const takeData = await api.getSessionTake(sessionId);
+          const takeData = await api.getSessionTake();
           setQuestions(takeData.questions);
           setCandidateName(takeData.candidate_name);
           setIsExamActive(true);
           
-          // Re-align timer based on started_at
-          const elapsedSeconds = Math.floor((Date.now() - new Date(info.started_at).getTime()) / 1000);
-          const remaining = Math.max(0, ((info.duration || 20) * 60) - elapsedSeconds);
+          // The backend deadline is authoritative; the UI timer is only a display.
+          const remaining = Math.max(0, Math.floor((new Date(takeData.deadline).getTime() - Date.now()) / 1000));
           setTimeLeft(remaining);
         } else {
           setTimeLeft((info.duration || 20) * 60);
@@ -48,7 +48,7 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
       }
     };
     loadSession();
-  }, [sessionId]);
+  }, []);
 
   // Focus loss tracking thread
   useEffect(() => {
@@ -59,7 +59,7 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
       if (focusTimer) clearTimeout(focusTimer);
       focusTimer = setTimeout(async () => {
         try {
-          await api.logFocusLost(sessionId);
+          await api.logFocusLost();
           addToast('⚠️ Tab switching detected! This event has been logged for review.', 'error');
         } catch (err) {
           console.error('Failed to log focus loss:', err);
@@ -81,7 +81,7 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (focusTimer) clearTimeout(focusTimer);
     };
-  }, [isExamActive, sessionId]);
+  }, [isExamActive]);
 
   // Countdown timer thread
   useEffect(() => {
@@ -104,17 +104,17 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
   const handleStartExam = async (e) => {
     e.preventDefault();
     if (!candidateName.trim()) {
-      addToast('Please enter your full name.', 'warning');
+      addToast('Please enter your name.', 'warning');
       return;
     }
 
     try {
       setLoading(true);
-      const data = await api.startSession(sessionId, candidateName, { department, jobTitle });
+      const data = await api.startSession(candidateName);
       setSessionInfo(data);
       setQuestions(data.questions);
       setIsExamActive(true);
-      setTimeLeft((data.duration || 20) * 60); // Start dynamic duration timer
+      setTimeLeft(Math.max(0, Math.floor((new Date(data.deadline).getTime() - Date.now()) / 1000)));
       addToast('Assessment started. Timer is active.');
     } catch (err) {
       addToast(err.message, 'error');
@@ -156,11 +156,10 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
     setIsExamActive(false);
 
     try {
-      await api.submitSessionAnswers(sessionId, responses);
+      const result = await api.submitSessionAnswers(responses);
       addToast('Assessment responses saved successfully!');
-      // Refresh session meta state
-      const info = await api.getSessionInfo(sessionId);
-      setSessionInfo(info);
+      setCompletedResults(result);
+      setSessionInfo(prev => ({ ...prev, ...result, status: 'completed' }));
     } catch (err) {
       addToast(err.message, 'error');
     } finally {
@@ -173,6 +172,22 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
     const mins = Math.floor(secs / 60);
     const remainingSecs = secs % 60;
     return `${mins.toString().padStart(2, '0')}:${remainingSecs.toString().padStart(2, '0')}`;
+  };
+
+  const handleDownloadSebConfig = async () => {
+    try {
+      const blob = await api.downloadSessionSebConfig();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `aptora_exam_${sessionInfo?.id || 'candidate'}.seb`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      addToast(err.message, 'error');
+    }
   };
 
   if (loading) {
@@ -212,14 +227,15 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
           </div>
 
           <div style={{ display: 'flex', width: '100%', gap: '1rem' }}>
-            <a 
-              href={`${api.API_BASE}/sessions/${sessionId}/seb-config`} 
+            <button
+              type="button"
+              onClick={handleDownloadSebConfig}
               className="btn btn-primary" 
               style={{ flex: 1, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
             >
               <Download size={16} style={{ marginRight: '0.5rem' }} />
               Download SEB Config
-            </a>
+            </button>
             <a 
               href="https://safeexambrowser.org/download.html" 
               target="_blank" 
@@ -230,6 +246,7 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
               Get SEB Browser
             </a>
           </div>
+          <EDataBranding variant={darkMode ? 'dark' : 'light'} />
         </div>
       </div>
     );
@@ -263,36 +280,15 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
             </div>
 
             <div>
-              <label>Full Name</label>
+              <label>Name</label>
               <input 
                 type="text" 
-                placeholder="John Doe" 
+                placeholder="John"
                 value={candidateName} 
                 onChange={e => setCandidateName(e.target.value)} 
                 required 
                 autoFocus
               />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div>
-                <label>Department</label>
-                <input 
-                  type="text" 
-                  placeholder="e.g. SOC Team" 
-                  value={department} 
-                  onChange={e => setDepartment(e.target.value)} 
-                />
-              </div>
-              <div>
-                <label>Job Title</label>
-                <input 
-                  type="text" 
-                  placeholder="e.g. Cyber Analyst" 
-                  value={jobTitle} 
-                  onChange={e => setJobTitle(e.target.value)} 
-                />
-              </div>
             </div>
 
             <div className="card" style={{ borderLeft: '4px solid var(--color-warning)', padding: '0.75rem', background: 'rgba(237, 108, 2, 0.05)', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
@@ -304,6 +300,9 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
               Begin Examination
             </button>
           </form>
+          <div style={{ borderTop: '1px solid var(--color-border)', marginTop: '1.5rem', paddingTop: '1rem' }}>
+            <EDataBranding variant={darkMode ? 'dark' : 'light'} />
+          </div>
         </div>
       </div>
     );
@@ -328,13 +327,16 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
           color: 'var(--text-light)',
           boxShadow: 'var(--shadow-md)'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
             <img
               src="/aptora-favicon-white.svg"
               alt="Aptora Icon"
-              style={{ width: '28px', height: '28px', display: 'block' }}
+              style={{ width: '40px', height: '40px', display: 'block' }}
             />
-            <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-light)', fontWeight: 800 }}>{sessionInfo.test_title}</h3>
+            <div>
+              <div style={{ color: 'white', fontSize: '1.15rem', fontWeight: 900, letterSpacing: '0.08em', lineHeight: 1 }}>APTORA</div>
+              <h3 style={{ margin: '0.3rem 0 0', fontSize: '0.9rem', color: 'rgba(255,255,255,0.72)', fontWeight: 600 }}>{sessionInfo.test_title}</h3>
+            </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
@@ -462,6 +464,8 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
                 <span>Previous</span>
               </button>
 
+              <EDataBranding variant={darkMode ? 'dark' : 'light'} compact large />
+
               {currentIdx === questions.length - 1 ? (
                 <button 
                   onClick={handleSubmitClick} 
@@ -562,6 +566,16 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
     );
   }
 
+  if (completedResults) {
+    return (
+      <TestResultsView
+        initialResults={completedResults}
+        candidateView
+        addToast={addToast}
+      />
+    );
+  }
+
   // Phase 3: Post-Exam submission feedback screen
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyItems: 'center', minHeight: '100vh', backgroundColor: 'var(--color-bg)', padding: '1.5rem', width: '100vw', justifyContent: 'center' }}>
@@ -585,11 +599,9 @@ export default function TestRunner({ sessionId, addToast, darkMode, setDarkMode 
           </span>
         </div>
 
-        <div style={{ display: 'flex', width: '100%', gap: '1rem', marginTop: '0.5rem' }}>
-          <a href={`#/results/${sessionId}`} className="btn btn-primary" style={{ flex: 1 }}>
-            View Detailed Scorecard
-          </a>
-        </div>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', margin: 0 }}>
+          Your temporary account has been removed. The assessment result remains available to administrators.
+        </p>
       </div>
     </div>
   );

@@ -1,28 +1,27 @@
 const db = require('./db');
 const bcrypt = require('bcryptjs');
+const { getPasswordPolicyError } = require('./auth');
 
 const args = process.argv.slice(2);
 
-if (args.length < 4) {
+if (args.length < 3) {
   console.log('================================================================');
   console.log(' Aptora CLI User Management Helper                              ');
   console.log('================================================================');
   console.log('Usage:');
-  console.log('  node server/create-user.js <username> <email> <password> <role>');
-  console.log('');
-  console.log('Parameters:');
-  console.log('  role: "admin" or "standard"');
+  console.log('  node server/create-user.js <username> <email> <password>');
   console.log('');
   console.log('Example:');
-  console.log('  node server/create-user.js secadmin admin@company.com mySecPass123 admin');
+  console.log('  node server/create-user.js secadmin admin@company.com mySecurePass123');
   console.log('================================================================');
   process.exit(1);
 }
 
-const [username, email, password, role] = args;
+const [username, email, password] = args;
 
-if (role !== 'admin' && role !== 'standard') {
-  console.error('Error: Role must be either "admin" or "standard".');
+const passwordError = getPasswordPolicyError(password);
+if (passwordError) {
+  console.error(`Error: ${passwordError}`);
   process.exit(1);
 }
 
@@ -41,8 +40,8 @@ const createUser = async () => {
     // Hash password & insert
     const passwordHash = bcrypt.hashSync(password, 10);
     const result = await db.run(
-      'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
-      [username, email, passwordHash, role]
+      'INSERT INTO users (username, email, password_hash, role, must_setup_2fa) VALUES (?, ?, ?, ?, 1)',
+      [username, email, passwordHash, 'admin']
     );
     
     console.log('');
@@ -52,7 +51,7 @@ const createUser = async () => {
     console.log(` ID:       #${result.id}`);
     console.log(` Username: ${username}`);
     console.log(` Email:    ${email}`);
-    console.log(` Role:     ${role.toUpperCase()}`);
+    console.log(' Role:     ADMIN');
     console.log('===========================================================');
     process.exit(0);
   } catch (error) {

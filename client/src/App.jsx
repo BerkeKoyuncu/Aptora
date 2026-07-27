@@ -3,13 +3,12 @@ import { api } from './api';
 import {
   Shield, Key, Users, Database, Mail, History, FileText, CheckCircle,
   XCircle, AlertCircle, Plus, Edit, Trash2, LogOut, Settings, Award,
-  Clock, ArrowRight, ArrowLeft, RefreshCw, Send, Check, X, Download, Printer, ChevronRight,
-  Sun, Moon, Menu, ChevronLeft
+  Clock, ArrowRight, ArrowLeft, RefreshCw, Check, X, Download, Printer, ChevronRight,
+  Sun, Moon, Menu, ChevronLeft, Eye, EyeOff
 } from 'lucide-react';
 
 // Subcomponents (we will create these next)
 import AdminDashboard from './components/AdminDashboard';
-import UserDashboard from './components/UserDashboard';
 import TestCreator from './components/TestCreator';
 import QuestionDb from './components/QuestionDb';
 import UserManagement from './components/UserManagement';
@@ -18,6 +17,7 @@ import TestRunner from './components/TestRunner';
 import TestResultsView from './components/TestResultsView';
 import TestHistory from './components/TestHistory';
 import TestExecutionHistory from './components/TestExecutionHistory';
+import EDataBranding from './components/EDataBranding';
 import EmailSettings from './components/EmailSettings';
 
 export default function App() {
@@ -26,7 +26,7 @@ export default function App() {
 
   // Auth state
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('aptora_token') || null);
+  const [candidate, setCandidate] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Settings / Profile states
@@ -112,16 +112,13 @@ export default function App() {
     }, 4000);
   };
 
-  // Listen to deep hash links
+  // Only administrator report deep links remain; candidates enter from the login page.
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
-      if (hash.startsWith('#/session/')) {
-        const sessionId = hash.substring(10);
-        setCurrentRoute({ path: 'session', params: { sessionId } });
-      } else if (hash.startsWith('#/results/')) {
-        const sessionId = hash.substring(10);
-        setCurrentRoute({ path: 'results', params: { sessionId } });
+      if (hash.startsWith('#/admin-results/')) {
+        const sessionId = hash.substring(16);
+        setCurrentRoute({ path: 'admin-results', params: { sessionId } });
       } else {
         setCurrentRoute({ path: 'home', params: {} });
       }
@@ -135,33 +132,39 @@ export default function App() {
   // Fetch current user details on load
   useEffect(() => {
     const fetchUser = async () => {
-      if (!token) {
-        setLoading(false);
-        return;
-      }
+      localStorage.removeItem('aptora_token');
       try {
         const me = await api.getMe();
         setUser(me);
       } catch (err) {
-        console.error('Session expired', err);
-        handleLogout();
+        setUser(null);
+        try {
+          const candidateMe = await api.getCandidateMe();
+          setCandidate(candidateMe);
+        } catch {
+          setCandidate(null);
+        }
       } finally {
         setLoading(false);
       }
     };
     fetchUser();
-  }, [token]);
+  }, []);
 
-  const handleLogin = (userData, userToken) => {
-    localStorage.setItem('aptora_token', userToken);
-    setToken(userToken);
-    setUser(userData);
-    addToast(`Welcome back, ${userData.username}!`);
+  const handleLogin = (account) => {
+    if (account.role === 'candidate') {
+      setCandidate(account);
+      setUser(null);
+      addToast(`Welcome, ${account.email}!`);
+      return;
+    }
+    setUser(account);
+    setCandidate(null);
+    addToast(`Welcome back, ${account.username}!`);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('aptora_token');
-    setToken(null);
+  const handleLogout = async () => {
+    try { await api.logout(); } catch { /* Clear local state even if the session expired. */ }
     setUser(null);
     setActiveTab('overview');
     addToast('Logged out successfully.');
@@ -212,21 +215,19 @@ export default function App() {
     );
   }
 
-  // If candidate is taking a test session (does not require staff authentication)
-  if (currentRoute.path === 'session') {
+  if (candidate) {
     return (
       <>
-        <TestRunner sessionId={currentRoute.params.sessionId} addToast={addToast} darkMode={darkMode} setDarkMode={setDarkMode} />
+        <TestRunner addToast={addToast} darkMode={darkMode} setDarkMode={setDarkMode} />
         <ToastContainer toasts={toasts} />
       </>
     );
   }
 
-  // If candidate or admin is viewing a scorecard results page (does not require login to view specific token results, or has public access link)
-  if (currentRoute.path === 'results') {
+  if (currentRoute.path === 'admin-results' && user) {
     return (
       <>
-        <TestResultsView sessionId={currentRoute.params.sessionId} addToast={addToast} onBackToDashboard={() => window.location.hash = ''} />
+        <TestResultsView sessionId={currentRoute.params.sessionId} adminView addToast={addToast} onBackToDashboard={() => window.location.hash = ''} />
         <ToastContainer toasts={toasts} />
       </>
     );
@@ -291,9 +292,9 @@ export default function App() {
             <img
               src="/aptora-favicon-white.svg"
               alt="Aptora Icon"
-              style={{ width: '28px', height: '28px', display: 'block' }}
+              style={{ width: '40px', height: '40px', display: 'block' }}
             />
-            <h1 style={{ color: 'var(--text-light)', fontSize: '1.25rem', marginBottom: 0, fontWeight: 800, letterSpacing: '0.02em' }}>APTORA</h1>
+            <h1 style={{ color: 'var(--text-light)', fontSize: '1.4rem', marginBottom: 0, fontWeight: 800, letterSpacing: '0.04em' }}>APTORA</h1>
           </div>
         </div>
 
@@ -401,7 +402,6 @@ export default function App() {
               )}
               <SidebarButton active={activeTab === 'add-question'} onClick={() => { setActiveTab('add-question'); setOpenAddModalOnLoad(false); }} icon={<Plus size={18} />} label="Add Question" collapsed={sidebarCollapsed} />
               <SidebarButton active={activeTab === 'questions'} onClick={() => { setActiveTab('questions'); setOpenAddModalOnLoad(false); }} icon={<Database size={18} />} label="Question List" collapsed={sidebarCollapsed} />
-              <SidebarButton active={activeTab === 'question-advices'} onClick={() => { setActiveTab('question-advices'); setOpenAddModalOnLoad(false); }} icon={<Mail size={18} />} label="Question Advices" collapsed={sidebarCollapsed} />
 
               {sidebarCollapsed ? (
                 <hr style={{ border: 'none', borderTop: '1px solid rgba(255, 255, 255, 0.08)', margin: '0.75rem 0' }} />
@@ -414,24 +414,17 @@ export default function App() {
             </>
           )}
 
-          {user.role === 'standard' && (
-            <>
-              {sidebarCollapsed ? (
-                <hr style={{ border: 'none', borderTop: '1px solid rgba(255, 255, 255, 0.08)', margin: '0.75rem 0' }} />
-              ) : (
-                <div className="sidebar-header">Contribute</div>
-              )}
-              <SidebarButton active={activeTab === 'advise'} onClick={() => { setActiveTab('advise'); setOpenAddModalOnLoad(false); }} icon={<Send size={18} />} label="Advise Question" collapsed={sidebarCollapsed} />
-            </>
+          {!sidebarCollapsed && (
+            <div style={{ marginTop: 'auto', borderTop: '1px solid rgba(255, 255, 255, 0.1)', paddingTop: '1rem' }}>
+              <EDataBranding variant="dark" compact />
+            </div>
           )}
         </nav>
 
         {/* Workspace Panels */}
         <main style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>
           {activeTab === 'overview' && (
-            user.role === 'admin'
-              ? <AdminDashboard user={user} addToast={addToast} onInviteCandidate={() => setActiveTab('test-history')} />
-              : <UserDashboard user={user} addToast={addToast} onInviteCandidate={() => setActiveTab('test-history')} />
+            <AdminDashboard user={user} addToast={addToast} onInviteCandidate={() => setActiveTab('test-history')} />
           )}
 
           {activeTab === 'creator' && (
@@ -455,14 +448,6 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'question-advices' && user.role === 'admin' && (
-            <QuestionDb
-              user={user}
-              addToast={addToast}
-              defaultView="advices"
-            />
-          )}
-
           {activeTab === 'add-question' && user.role === 'admin' && (
             <QuestionDb
               user={user}
@@ -482,10 +467,6 @@ export default function App() {
 
           {activeTab === 'email-settings' && user.role === 'admin' && (
             <EmailSettings user={user} addToast={addToast} />
-          )}
-
-          {activeTab === 'advise' && user.role === 'standard' && (
-            <QuestionDb user={user} addToast={addToast} isAdviceOnly={true} />
           )}
 
           {activeTab === 'settings' && (
@@ -531,6 +512,8 @@ export default function App() {
                           placeholder="••••••••"
                           value={editPassword}
                           onChange={e => setEditPassword(e.target.value)}
+                          minLength={editPassword ? 8 : undefined}
+                          title="Minimum 8 characters with uppercase, lowercase, number, and special character"
                         />
                       </div>
                     </div>
@@ -665,14 +648,14 @@ function ToastContainer({ toasts }) {
   );
 }
 
-// Authentication Gate Component (Handles Login, Registration, and 2FA prompts)
+// Authentication Gate Component (Handles administrator login and 2FA prompts)
 function AuthGate({ onLogin, addToast }) {
-  const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [twofaCode, setTwofaCode] = useState('');
   const [temp2FAToken, setTemp2FAToken] = useState(null); // When login returns 2fa_required
+  const [initial2FASetup, setInitial2FASetup] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [logoLoaded, setLogoLoaded] = useState(false);
 
@@ -683,23 +666,22 @@ function AuthGate({ onLogin, addToast }) {
 
     try {
       if (temp2FAToken) {
-        // Verification step
-        const response = await api.verify2FA(twofaCode, temp2FAToken);
-        onLogin(response.user, response.token);
-      } else if (isRegister) {
-        // Registration
-        await api.register(username, email, password);
-        addToast('Registration complete! Please log in.');
-        setIsRegister(false);
-        setPassword('');
+        const response = initial2FASetup
+          ? await api.completeInitial2FA(twofaCode, temp2FAToken)
+          : await api.verify2FA(twofaCode, temp2FAToken);
+        onLogin(response.user);
       } else {
         // Login
         const response = await api.login(username, password);
         if (response.twofa_required) {
           setTemp2FAToken(response.tempToken);
           addToast('2FA code verification required.', 'warning');
+        } else if (response.twofa_setup_required) {
+          setTemp2FAToken(response.tempToken);
+          setInitial2FASetup({ secret: response.secret, qrCodeUrl: response.qrCodeUrl });
+          addToast('Authenticator setup is required before first access.', 'warning');
         } else {
-          onLogin(response.user, response.token);
+          onLogin(response.candidate || response.user);
         }
       }
     } catch (err) {
@@ -711,9 +693,9 @@ function AuthGate({ onLogin, addToast }) {
 
   const handleReset = () => {
     setTemp2FAToken(null);
+    setInitial2FASetup(null);
     setTwofaCode('');
     setUsername('');
-    setEmail('');
     setPassword('');
   };
 
@@ -762,15 +744,15 @@ function AuthGate({ onLogin, addToast }) {
               </div>
             )}
           </div>
-          {temp2FAToken || isRegister ? (
+          {temp2FAToken ? (
             <h2 style={{ color: 'white', fontSize: '1.8rem', margin: '0 0 0.5rem 0', fontWeight: 800, letterSpacing: '-0.03em' }}>
-              {temp2FAToken ? 'Secure Verification' : 'Create Account'}
+              Secure Verification
             </h2>
           ) : null}
           <p style={{ color: 'rgba(255, 255, 255, 0.7)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
-            {temp2FAToken
+            {initial2FASetup ? 'Scan the QR code, then enter the six-digit code' : temp2FAToken
               ? 'Enter authenticator credentials'
-              : (isRegister ? 'Sign up for network & cyber grading' : 'Sign in to access your dashboard')}
+              : 'Sign in to continue'}
           </p>
         </div>
 
@@ -779,6 +761,14 @@ function AuthGate({ onLogin, addToast }) {
           {temp2FAToken ? (
             /* 2FA Input Panel */
             <div>
+              {initial2FASetup && (
+                <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
+                  <img src={initial2FASetup.qrCodeUrl} alt="Authenticator QR code" style={{ width: 190, height: 190, borderRadius: 8, background: 'white', padding: 8 }} />
+                  <div style={{ color: 'rgba(255,255,255,.75)', fontSize: '.75rem', marginTop: '.5rem', wordBreak: 'break-all' }}>
+                    Manual key: {initial2FASetup.secret}
+                  </div>
+                </div>
+              )}
               <label style={{ color: 'rgba(255, 255, 255, 0.8)' }}>Authenticator Token Code</label>
               <input
                 type="text"
@@ -803,41 +793,42 @@ function AuthGate({ onLogin, addToast }) {
             /* Regular Login/Register Form */
             <>
               <div>
-                <label style={{ color: 'rgba(255, 255, 255, 0.8)' }}>Username</label>
+                <label style={{ color: 'rgba(255, 255, 255, 0.8)' }}>Email or Username</label>
                 <input
                   type="text"
                   value={username}
                   onChange={e => setUsername(e.target.value)}
-                  placeholder="Enter your username"
+                  placeholder="Enter username or email"
                   required
                   style={{ background: '#FFFFFF', color: '#0F2527', border: '1px solid var(--color-border)' }}
                 />
               </div>
 
-              {isRegister && (
-                <div>
-                  <label style={{ color: 'rgba(255, 255, 255, 0.8)' }}>Email Address</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    placeholder="Enter your email address"
-                    required
-                    style={{ background: '#FFFFFF', color: '#0F2527', border: '1px solid var(--color-border)' }}
-                  />
-                </div>
-              )}
-
               <div>
                 <label style={{ color: 'rgba(255, 255, 255, 0.8)' }}>Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  required
-                  style={{ background: '#FFFFFF', color: '#0F2527', border: '1px solid var(--color-border)' }}
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    required
+                    style={{ background: '#FFFFFF', color: '#0F2527', border: '1px solid var(--color-border)', paddingRight: '2.8rem' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(value => !value)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    style={{
+                      position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)',
+                      border: 'none', background: 'transparent', color: '#526568', cursor: 'pointer',
+                      padding: '0.2rem', display: 'inline-flex', alignItems: 'center'
+                    }}
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
               </div>
             </>
           )}
@@ -851,7 +842,7 @@ function AuthGate({ onLogin, addToast }) {
             border: 'none',
             fontSize: '1rem'
           }}>
-            {submitting ? 'Authenticating...' : (temp2FAToken ? 'Verify and Enter' : (isRegister ? 'Register Account' : 'Sign In'))}
+            {submitting ? 'Authenticating...' : (temp2FAToken ? 'Verify and Enter' : 'Sign In')}
           </button>
         </form>
 
@@ -861,11 +852,10 @@ function AuthGate({ onLogin, addToast }) {
             <button onClick={handleReset} style={{ background: 'none', border: 'none', color: 'white', textDecoration: 'underline', cursor: 'pointer' }}>
               Back to Login screen
             </button>
-          ) : (
-            <button onClick={() => { setIsRegister(!isRegister); handleReset(); }} style={{ background: 'none', border: 'none', color: 'white', textDecoration: 'underline', cursor: 'pointer' }}>
-              {isRegister ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
-            </button>
-          )}
+          ) : null}
+        </div>
+        <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)', marginTop: '1.25rem', paddingTop: '1rem' }}>
+          <EDataBranding variant="dark" />
         </div>
       </div>
     </div>

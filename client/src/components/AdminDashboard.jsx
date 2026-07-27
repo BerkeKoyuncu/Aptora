@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { History, FileText, Award, Shield, Plus, Mail, Copy, ExternalLink, RefreshCw, AlertTriangle } from 'lucide-react';
+import { History, FileText, Award, Shield, Plus, Mail, ExternalLink, RefreshCw, AlertTriangle, X, CheckCircle, Copy, Send } from 'lucide-react';
 
 export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
   const [metrics, setMetrics] = useState({
@@ -18,7 +18,9 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [selectedTestId, setSelectedTestId] = useState('');
   const [candidateEmail, setCandidateEmail] = useState('');
+  const [candidatePassword, setCandidatePassword] = useState('');
   const [inviteResult, setInviteResult] = useState(null);
+  const [sendingCandidateEmail, setSendingCandidateEmail] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -53,7 +55,7 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
       // Since fetching detail for each session is expensive, we can calculate a mock profile or aggregate based on feedback if available.
       // Wait, we can fetch detailed reports for the top 5 completed sessions or simulate a breakdown if database details are light.
       // Let's do a fast detail aggregation:
-      const detailsPromises = completed.slice(0, 8).map(s => api.getSessionResults(s.id).catch(() => null));
+      const detailsPromises = completed.slice(0, 8).map(s => api.getAdminSessionResults(s.id).catch(() => null));
       const detailedResults = await Promise.all(detailsPromises);
       
       detailedResults.forEach(res => {
@@ -93,19 +95,54 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
     }
 
     try {
-      const result = await api.createSessionLink(selectedTestId, candidateEmail);
+      const result = await api.createCandidateSession(selectedTestId, candidateEmail, candidatePassword);
       setInviteResult(result);
-      addToast('Invitation link generated and logged in Virtual Mailbox.');
+      addToast('Temporary candidate account created.');
       fetchData(); // Refresh history
     } catch (err) {
       addToast(err.message, 'error');
     }
   };
 
-  const copyInviteLink = () => {
-    if (!inviteResult) return;
-    api.copyText(inviteResult.testLink);
-    addToast('Invitation link copied to clipboard!');
+  const copyEmailTemplate = async () => {
+    if (!inviteResult?.emailTemplate) return;
+    try {
+      await api.copyText(inviteResult.emailTemplate);
+      addToast('Candidate email text copied to clipboard.');
+    } catch {
+      addToast('Email text could not be copied.', 'error');
+    }
+  };
+
+  const copyEmailSubject = async () => {
+    if (!inviteResult?.emailSubject) return;
+    try {
+      await api.copyText(inviteResult.emailSubject);
+      addToast('Email subject copied to clipboard.');
+    } catch {
+      addToast('Email subject could not be copied.', 'error');
+    }
+  };
+
+  const sendCandidateEmail = async () => {
+    if (!inviteResult?.emailSubject || !inviteResult?.emailTemplate) return;
+    if (inviteResult.emailTemplate.includes(inviteResult.sessionLinkPlaceholder)) {
+      addToast('Replace the session-link placeholder before sending.', 'warning');
+      return;
+    }
+    try {
+      setSendingCandidateEmail(true);
+      const result = await api.sendCandidateEmail(
+        inviteResult.candidateEmail || candidateEmail,
+        inviteResult.emailSubject,
+        inviteResult.emailTemplate
+      );
+      addToast(result.message);
+    } catch (err) {
+      addToast(err.message, 'error');
+    } finally {
+      setSendingCandidateEmail(false);
+    }
   };
 
   if (loading) {
@@ -192,7 +229,7 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
                         </td>
                         <td>
                           {session.status === 'completed' && (
-                            <a href={`#/results/${session.id}`} className="btn btn-accent btn-sm" style={{ display: 'inline-flex', padding: '0.2rem 0.4rem', fontSize: '0.75rem', alignItems: 'center', gap: '0.25rem' }}>
+                            <a href={`#/admin-results/${session.id}`} className="btn btn-accent btn-sm" style={{ display: 'inline-flex', padding: '0.2rem 0.4rem', fontSize: '0.75rem', alignItems: 'center', gap: '0.25rem' }}>
                               <span>Scorecard</span>
                               <ExternalLink size={12} />
                             </a>
@@ -285,13 +322,24 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
                     required 
                   />
                   <small style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem', display: 'block' }}>
-                    An automated invitation link will be recorded in the local network simulation outbox.
+                    The candidate will use this email on the standard login page.
                   </small>
+                </div>
+
+                <div>
+                  <label>Temporary Password</label>
+                  <input
+                    type="password"
+                    placeholder="Set a strong temporary password"
+                    value={candidatePassword}
+                    onChange={e => setCandidatePassword(e.target.value)}
+                    required
+                  />
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem' }}>
                   <button type="button" onClick={() => setShowInviteModal(false)} className="btn btn-accent btn-sm">Cancel</button>
-                  <button type="submit" className="btn btn-primary btn-sm">Generate Link</button>
+                  <button type="submit" className="btn btn-primary btn-sm">Create Candidate Account</button>
                 </div>
               </form>
             ) : (
@@ -302,7 +350,7 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
                     <span>Session Created Successfully</span>
                   </div>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                    Copy this link and send it to the candidate, or navigate to the Virtual Mailbox to click it directly.
+                    Add the session link to the generated template, then send it to the candidate.
                   </p>
                 </div>
 
@@ -312,16 +360,42 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
                 </div>
 
                 <div>
-                  <label>Access Link</label>
+                  <label>Email Subject</label>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <input type="text" readOnly value={inviteResult.testLink} style={{ background: 'var(--color-bg)', color: 'var(--text-secondary)', fontSize: '0.8rem' }} />
-                    <button onClick={copyInviteLink} className="btn btn-secondary btn-sm" style={{ display: 'flex', alignItems: 'center' }}>
-                      <Copy size={16} />
+                    <input
+                      type="text"
+                      value={inviteResult.emailSubject || ''}
+                      onChange={event => setInviteResult(current => ({ ...current, emailSubject: event.target.value }))}
+                    />
+                    <button onClick={copyEmailSubject} className="btn btn-secondary btn-sm" title="Copy email subject" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <Copy size={14} />
                     </button>
                   </div>
                 </div>
 
+                <div>
+                  <label>Candidate Email Template</label>
+                  <textarea
+                    value={inviteResult.emailTemplate || ''}
+                    onChange={event => setInviteResult(current => ({ ...current, emailTemplate: event.target.value }))}
+                    rows={18}
+                    style={{ width: '100%', resize: 'vertical', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '0.82rem', lineHeight: 1.45 }}
+                  />
+                  <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '0.4rem' }}>
+                    Replace {inviteResult.sessionLinkPlaceholder} with the session link before sending.
+                    The delivered HTML email includes the standard color E-Data logo.
+                  </small>
+                </div>
+
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem', borderTop: '1px solid var(--color-border)', paddingTop: '1rem' }}>
+                  <button onClick={copyEmailTemplate} className="btn btn-primary btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <Copy size={14} />
+                    Copy Email Text
+                  </button>
+                  <button onClick={sendCandidateEmail} className="btn btn-secondary btn-sm" disabled={sendingCandidateEmail} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                    {sendingCandidateEmail ? <RefreshCw className="animate-spin" size={14} /> : <Send size={14} />}
+                    {sendingCandidateEmail ? 'Sending...' : 'Send Email'}
+                  </button>
                   <button onClick={() => setShowInviteModal(false)} className="btn btn-accent btn-sm">Close</button>
                 </div>
               </div>

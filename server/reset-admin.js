@@ -2,7 +2,7 @@ const readline = require('readline');
 const bcrypt = require('bcryptjs');
 const otplib = require('otplib');
 const db = require('./db');
-const { encrypt, decrypt } = require('./auth');
+const { encrypt, decrypt, getPasswordPolicyError } = require('./auth');
 const qrcode = require('qrcode');
 const Writable = require('stream').Writable;
 
@@ -110,27 +110,30 @@ async function main() {
 
       if (resetOption === '1') {
         let newPwd = '';
-        while (newPwd.length < 6) {
-          newPwd = await readPassword('Enter New Password (min 6 chars): ');
-          if (newPwd.length < 6) {
-            console.log('Password must be at least 6 characters long.\n');
+        while (true) {
+          newPwd = await readPassword('Enter New Password (min 8, upper/lower/number/special): ');
+          const passwordError = getPasswordPolicyError(newPwd);
+          if (passwordError) {
+            console.log(`${passwordError}\n`);
             continue;
           }
           const confirmNewPwd = await readPassword('Confirm New Password: ');
           if (newPwd !== confirmNewPwd) {
             console.log('Passwords do not match. Please try again.\n');
             newPwd = '';
+            continue;
           }
+          break;
         }
         
         const newHash = bcrypt.hashSync(newPwd, 10);
-        await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, adminUser.id]);
+        await db.run('UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', [newHash, adminUser.id]);
         console.log('🎉 SUCCESS: Admin password has been updated successfully!');
       } 
       else if (resetOption === '2') {
         const twofaSecret = otplib.authenticator.generateSecret();
         const encryptedSecret = encrypt(twofaSecret);
-        await db.run('UPDATE users SET twofa_secret = ?, twofa_enabled = 1 WHERE id = ?', [encryptedSecret, adminUser.id]);
+        await db.run('UPDATE users SET twofa_secret = ?, twofa_enabled = 1, must_setup_2fa = 0, token_version = token_version + 1 WHERE id = ?', [encryptedSecret, adminUser.id]);
         
         console.log('🎉 SUCCESS: 2FA has been re-initialized!');
         console.log('-----------------------------------------------------------');
@@ -147,7 +150,7 @@ async function main() {
         }
       } 
       else if (resetOption === '3') {
-        await db.run('UPDATE users SET twofa_enabled = 0 WHERE id = ?', [adminUser.id]);
+        await db.run('UPDATE users SET twofa_enabled = 0, twofa_secret = NULL, must_setup_2fa = 0, token_version = token_version + 1 WHERE id = ?', [adminUser.id]);
         console.log('🎉 SUCCESS: Two-Factor Authentication has been disabled for this account.');
       } 
       else {

@@ -1,13 +1,13 @@
 @echo off
-title Aptora Server
+setlocal
 cd /d "%~dp0"
-echo Starting Aptora Server...
-echo The application is hosted at: http://localhost:9372
-echo.
-start http://localhost:9372
-if exist "bin\node.exe" (
-    bin\node.exe server/server.js
-) else (
-    node server/server.js
+net session >nul 2>&1
+if errorlevel 1 (
+  set "APTORA_LAUNCHER=%~f0"
+  powershell.exe -NoProfile -Command "Start-Process -FilePath $env:APTORA_LAUNCHER -Verb RunAs" 2>nul
+  exit /b %errorlevel%
 )
-pause
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0server-control.ps1" Start
+if errorlevel 1 pause & exit /b 1
+for /f "usebackq tokens=1,* delims==" %%A in ("%ProgramData%\Aptora\aptora.env") do if /i "%%A"=="PUBLIC_URL" set "APTORA_URL=%%B"
+if defined APTORA_URL start "" "%APTORA_URL%"

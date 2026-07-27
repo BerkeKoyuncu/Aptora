@@ -3,10 +3,8 @@ const API_BASE = window.location.port === '5173'
   : `${window.location.protocol}//${window.location.host}/api`;
 
 const getHeaders = () => {
-  const token = localStorage.getItem('aptora_token');
   return {
-    'Content-Type': 'application/json',
-    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    'Content-Type': 'application/json'
   };
 };
 
@@ -15,6 +13,7 @@ const request = async (endpoint, options = {}) => {
   const headers = { ...getHeaders(), ...options.headers };
   const config = {
     ...options,
+    credentials: 'include',
     headers
   };
 
@@ -32,6 +31,8 @@ const request = async (endpoint, options = {}) => {
   return response.json();
 };
 
+const candidateRequest = (endpoint, options = {}) => request(`/candidate/${endpoint}`, options);
+
 export const api = {
   API_BASE,
   // Auth
@@ -41,8 +42,11 @@ export const api = {
   verify2FA: (code, tempToken) =>
     request('/auth/verify-2fa', { method: 'POST', body: { code, tempToken } }),
 
-  register: (username, email, password) =>
-    request('/auth/register', { method: 'POST', body: { username, email, password } }),
+  completeInitial2FA: (code, tempToken) =>
+    request('/auth/complete-initial-2fa', { method: 'POST', body: { code, tempToken } }),
+
+  logout: () =>
+    request('/auth/logout', { method: 'POST' }),
 
   setup2FA: () =>
     request('/auth/setup-2fa', { method: 'POST' }),
@@ -55,6 +59,12 @@ export const api = {
 
   getMe: () =>
     request('/auth/me', { method: 'GET' }),
+
+  getCandidateMe: () =>
+    request('/auth/candidate-me', { method: 'GET' }),
+
+  candidateLogout: () =>
+    request('/auth/candidate-logout', { method: 'POST' }),
 
   updateProfile: (payload) =>
     request('/auth/profile', { method: 'PUT', body: payload }),
@@ -88,19 +98,6 @@ export const api = {
   deleteQuestion: (id) =>
     request(`/questions/${id}`, { method: 'DELETE' }),
 
-  // Advices
-  getAdvices: () =>
-    request('/questions/advices', { method: 'GET' }),
-
-  submitAdvice: (qData) =>
-    request('/questions/advices', { method: 'POST', body: qData }),
-
-  approveAdvice: (id) =>
-    request(`/questions/advices/${id}/approve`, { method: 'POST' }),
-
-  rejectAdvice: (id) =>
-    request(`/questions/advices/${id}/reject`, { method: 'POST' }),
-
   // Tests
   getTests: () =>
     request('/tests', { method: 'GET' }),
@@ -118,23 +115,34 @@ export const api = {
   getSessions: () =>
     request('/sessions', { method: 'GET' }),
 
-  createSessionLink: (test_id, candidate_email) =>
-    request('/sessions/create-link', { method: 'POST', body: { test_id, candidate_email } }),
+  createCandidateSession: (test_id, candidate_email, candidate_password) =>
+    request('/sessions', { method: 'POST', body: { test_id, candidate_email, candidate_password } }),
 
-  getSessionInfo: (sessionId) =>
-    request(`/sessions/${sessionId}`, { method: 'GET' }),
+  getSessionInfo: () =>
+    candidateRequest('session', { method: 'GET' }),
 
-  startSession: (sessionId, candidate_name, candidate_info = {}) =>
-    request(`/sessions/${sessionId}/start`, { method: 'POST', body: { candidate_name, candidate_info } }),
+  startSession: (candidate_name) =>
+    candidateRequest('start', { method: 'POST', body: { candidate_name } }),
 
-  getSessionTake: (sessionId) =>
-    request(`/sessions/${sessionId}/take`, { method: 'GET' }),
+  getSessionTake: () =>
+    candidateRequest('take', { method: 'GET' }),
 
-  submitSessionAnswers: (sessionId, responses) =>
-    request(`/sessions/${sessionId}/submit`, { method: 'POST', body: { responses } }),
+  submitSessionAnswers: (responses) =>
+    candidateRequest('submit', { method: 'POST', body: { responses } }),
 
-  getSessionResults: (sessionId) =>
-    request(`/sessions/${sessionId}/results`, { method: 'GET' }),
+  downloadSessionSebConfig: async () => {
+    const response = await fetch(`${API_BASE}/candidate/seb-config`, {
+      method: 'GET', credentials: 'include'
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to download Safe Exam Browser configuration.');
+    }
+    return response.blob();
+  },
+
+  getAdminSessionResults: (sessionId) =>
+    request('/admin/session-results', { method: 'GET', headers: { 'X-Aptora-Session-Token': sessionId } }),
 
   getEmails: () =>
     request('/emails', { method: 'GET' }),
@@ -143,7 +151,32 @@ export const api = {
     request(`/emails/${id}`, { method: 'DELETE' }),
 
   deleteSession: (id) =>
-    request(`/sessions/${id}`, { method: 'DELETE' }),
+    request('/admin/session', { method: 'DELETE', headers: { 'X-Aptora-Session-Token': id } }),
+
+  updateCandidateCredentials: (sessionId, candidate_email, candidate_password) =>
+    request('/admin/candidate-credentials', {
+      method: 'PUT',
+      headers: { 'X-Aptora-Session-Token': sessionId },
+      body: { candidate_email, candidate_password }
+    }),
+
+  getCandidateCredentials: (sessionId) =>
+    request('/admin/candidate-credentials', {
+      method: 'GET',
+      headers: { 'X-Aptora-Session-Token': sessionId }
+    }),
+
+  sendCandidateEmail: (candidate_email, subject, text) =>
+    request('/admin/candidate-email', {
+      method: 'POST',
+      body: { candidate_email, subject, text }
+    }),
+
+  getCandidateEmailTemplate: (sessionId) =>
+    request('/admin/candidate-email-template', {
+      method: 'GET',
+      headers: { 'X-Aptora-Session-Token': sessionId }
+    }),
 
   bulkDeleteQuestions: (ids) =>
     request('/questions/bulk-delete', { method: 'POST', body: { ids } }),
@@ -197,6 +230,6 @@ export const api = {
       }
     }
   },
-  logFocusLost: (sessionId) =>
-    request(`/sessions/${sessionId}/log-focus-lost`, { method: 'POST' })
+  logFocusLost: () =>
+    candidateRequest('focus-lost', { method: 'POST' })
 };

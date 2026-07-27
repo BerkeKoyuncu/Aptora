@@ -88,7 +88,7 @@ export default function EmailSettings({ user, addToast }) {
       <div>
         <h2>Email Configuration Settings</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-          Configure SMTP properties to dispatch real-time assessment invites to candidate email inboxes.
+          Configure your personal administrator SMTP connection. These settings are not shared with other administrators.
         </p>
       </div>
 
@@ -105,7 +105,7 @@ export default function EmailSettings({ user, addToast }) {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem', background: 'var(--color-panel)', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)' }}>
             <div>
               <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>Enable Real Email Delivery</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Send invitations directly to candidate inboxes.</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Configure authenticated system email delivery.</div>
             </div>
             {/* Sliding Toggle Switch */}
             <button 
@@ -206,7 +206,14 @@ export default function EmailSettings({ user, addToast }) {
               name="smtp_secure"
               id="smtp_secure"
               checked={settings.smtp_secure}
-              onChange={handleChange}
+              onChange={event => {
+                const secure = event.target.checked;
+                setSettings(previous => ({
+                  ...previous,
+                  smtp_secure: secure,
+                  smtp_port: secure ? 465 : (Number(previous.smtp_port) === 465 ? 587 : previous.smtp_port)
+                }));
+              }}
               style={{ width: 'auto', marginRight: '0.5rem', cursor: 'pointer' }}
             />
             <label htmlFor="smtp_secure" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', cursor: 'pointer', margin: 0 }}>

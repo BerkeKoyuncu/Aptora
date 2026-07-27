@@ -1,96 +1,68 @@
 @echo off
-title Aptora Setup Builder
-color 0E
-cls
-echo ===========================================================
-echo            Aptora Setup Installer Builder                  
-echo ===========================================================
-echo.
+setlocal EnableExtensions
+cd /d "%~dp0"
+title Aptora Offline Server Installer Builder
 
-:: Path to Inno Setup Compiler
 set "ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC_PATH%" set "ISCC_PATH=C:\Program Files\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC_PATH%" for %%I in (ISCC.exe) do set "ISCC_PATH=%%~$PATH:I"
 if not exist "%ISCC_PATH%" (
-    set "ISCC_PATH=C:\Program Files\Inno Setup 6\ISCC.exe"
-)
-if not exist "%ISCC_PATH%" (
-    for %%i in (ISCC.exe) do set "ISCC_PATH=%%~$PATH:i"
+  echo ERROR: Inno Setup 6 compiler was not found.
+  exit /b 1
 )
 
-echo Checking Inno Setup 6 compiler...
-if "%ISCC_PATH%"=="" (
-    color 0C
-    echo ERROR: Inno Setup 6 was not found on this system!
-    echo Please download and install Inno Setup 6 from:
-    echo https://jrsoftware.org/isdl.php
-    echo.
-    pause
-    exit /b 1
-)
-if not exist "%ISCC_PATH%" (
-    color 0C
-    echo ERROR: Inno Setup 6 was not found at expected path!
-    echo Path: "%ISCC_PATH%"
-    echo Please install Inno Setup 6.
-    echo.
-    pause
-    exit /b 1
+for %%I in (node.exe) do set "SYSTEM_NODE=%%~$PATH:I"
+if not defined SYSTEM_NODE if exist "C:\Program Files\nodejs\node.exe" set "SYSTEM_NODE=C:\Program Files\nodejs\node.exe"
+if not exist "%SYSTEM_NODE%" (
+  echo ERROR: Node.js 20.17 or newer was not found.
+  exit /b 1
 )
 
-echo Compiler found.
-echo.
-
-:: Build Client production bundle
-echo [1/3] Building client production files...
-call npm run build:client
-if %errorlevel% neq 0 (
-    color 0C
-    echo ERROR: Client build failed! Cannot compile installer.
-    pause
-    exit /b 1
-)
-echo Client compiled.
-echo.
-
-:: Bundle Node.js binary
-echo [2/3] Bundling portable Node.js binary...
-if not exist "bin" mkdir bin
-for %%i in (node.exe) do set "NODE_PATH=%%~$PATH:i"
-if "%NODE_PATH%"=="" (
-    if exist "C:\Program Files\nodejs\node.exe" set "NODE_PATH=C:\Program Files\nodejs\node.exe"
-)
-if exist "%NODE_PATH%" (
-    echo Found Node.exe at: %NODE_PATH%
-    copy /y "%NODE_PATH%" "bin\node.exe" >nul
-    echo Node.js binary copied to bin\node.exe
-) else (
-    color 0C
-    echo ERROR: node.exe was not found in your system path! Cannot build offline installer.
-    pause
-    exit /b 1
-)
-echo.
-
-echo [3/3] Compiling AptoraSetup.exe (this will package all files)...
-echo.
-
-:: Run compiler
-"%ISCC_PATH%" installer.iss
-
-if %errorlevel% neq 0 (
-    color 0C
-    echo.
-    echo ERROR: Compilation failed!
-    pause
-    exit /b 1
+"%SYSTEM_NODE%" -e "const [major,minor]=process.versions.node.split('.').map(Number);if(major<20||(major===20&&minor<17))process.exit(1)"
+if errorlevel 1 (
+  echo ERROR: Node.js 20.17 or newer is required.
+  exit /b 1
 )
 
-color 0A
-echo.
+echo [1/5] Installing deterministic production backend dependencies...
+if not exist ".installer-npm-cache" mkdir ".installer-npm-cache"
+if not exist "%CD%\server\package.json" (
+  echo ERROR: Builder is not running from the Aptora workspace root.
+  exit /b 1
+)
+if exist "%CD%\server\node_modules" rmdir /s /q "%CD%\server\node_modules"
+call npm ci --prefix server --omit=dev --cache "%CD%\.installer-npm-cache"
+if errorlevel 1 (
+  echo ERROR: Backend dependency installation failed.
+  exit /b 1
+)
+
+echo [2/5] Building the production frontend...
+call npm run build --prefix client -- --outDir installer-dist --emptyOutDir
+if errorlevel 1 exit /b 1
+
+echo [3/5] Bundling the portable Node.js runtime...
+if not exist "bin" mkdir "bin"
+copy /y "%SYSTEM_NODE%" "bin\node.exe" >nul
+if errorlevel 1 exit /b 1
+
+echo [4/5] Verifying the packaged runtime...
+"bin\node.exe" -e "require('./server/node_modules/sqlite3');require('./server/node_modules/express');require('./server/node_modules/exceljs');console.log('Runtime dependencies verified.')"
+if errorlevel 1 exit /b 1
+
+echo [5/5] Compiling AptoraSetup.exe...
+"%ISCC_PATH%" "installer.iss"
+set "BUILD_RESULT=%ERRORLEVEL%"
+
+if exist "client\installer-dist" rmdir /s /q "client\installer-dist"
+if exist ".installer-npm-cache" rmdir /s /q ".installer-npm-cache"
+if not "%BUILD_RESULT%"=="0" (
+  echo ERROR: Installer compilation failed.
+  exit /b %BUILD_RESULT%
+)
+
 echo ===========================================================
-echo   🎉 SUCCESS: Installer AptoraSetup.exe created!
+echo SUCCESS: AptoraSetup.exe is ready.
+echo The installer contains Node.js, backend dependencies, and frontend assets.
 echo ===========================================================
-echo You can find "AptoraSetup.exe" in this root folder.
-echo Distribute this file to users for full Windows installation.
-echo ===========================================================
-echo.
-pause
+exit /b 0

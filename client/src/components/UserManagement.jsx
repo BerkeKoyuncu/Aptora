@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { Users, Plus, Edit, Trash2, Shield, Key, RefreshCw, XCircle } from 'lucide-react';
+import { Users, Plus, Edit, Trash2, RefreshCw, XCircle } from 'lucide-react';
 
 export default function UserManagement({ user: currentUser, addToast }) {
   const [users, setUsers] = useState([]);
@@ -16,7 +16,6 @@ export default function UserManagement({ user: currentUser, addToast }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState('standard');
 
   const fetchUsers = async () => {
     try {
@@ -40,7 +39,6 @@ export default function UserManagement({ user: currentUser, addToast }) {
     setUsername('');
     setEmail('');
     setPassword('');
-    setRole('standard');
     setShowModal(true);
   };
 
@@ -50,7 +48,6 @@ export default function UserManagement({ user: currentUser, addToast }) {
     setUsername(u.username);
     setEmail(u.email);
     setPassword(''); // Reset password input
-    setRole(u.role);
     setShowModal(true);
   };
 
@@ -69,7 +66,6 @@ export default function UserManagement({ user: currentUser, addToast }) {
     const payload = {
       username,
       email,
-      role,
       ...(password ? { password } : {})
     };
 
@@ -139,12 +135,12 @@ export default function UserManagement({ user: currentUser, addToast }) {
       {/* Title */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h2>User Administration</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Manage accounts, passwords, and Role-Based Access Control (RBAC) privileges.</p>
+          <h2>Administrator Accounts</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Manage administrator accounts and passwords.</p>
         </div>
         <button onClick={handleOpenAdd} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Plus size={18} />
-          <span>Add User Account</span>
+          <span>Add Administrator</span>
         </button>
       </div>
 
@@ -184,7 +180,7 @@ export default function UserManagement({ user: currentUser, addToast }) {
               <th style={{ width: '80px' }}>ID</th>
               <th>Username</th>
               <th>Email Address</th>
-              <th>Access Role</th>
+              <th>Account Type</th>
               <th>2FA Enforced</th>
               <th>Created Date</th>
               <th style={{ width: '120px' }}>Actions</th>
@@ -212,9 +208,7 @@ export default function UserManagement({ user: currentUser, addToast }) {
                 <td style={{ fontWeight: 600, color: 'var(--color-primary)' }}>{u.username}</td>
                 <td>{u.email}</td>
                 <td>
-                  <span className={`badge ${u.role === 'admin' ? 'badge-danger' : 'badge-accent'}`}>
-                    {u.role}
-                  </span>
+                  <span className="badge badge-danger">Administrator</span>
                 </td>
                 <td>
                   <span className={`badge ${u.twofa_enabled ? 'badge-success' : 'badge-primary'}`}>
@@ -252,7 +246,7 @@ export default function UserManagement({ user: currentUser, addToast }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Users size={20} style={{ color: 'var(--color-primary)' }} />
               <h3 style={{ margin: 0 }}>
-                {modalType === 'add' ? 'Create User Account' : 'Edit User Profile'}
+                {modalType === 'add' ? 'Create Administrator' : 'Edit Administrator'}
               </h3>
             </div>
             <button onClick={() => setShowModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
@@ -293,15 +287,9 @@ export default function UserManagement({ user: currentUser, addToast }) {
                 value={password} 
                 onChange={e => setPassword(e.target.value)} 
                 required={modalType === 'add'} 
+                minLength={password ? 8 : undefined}
+                title="Minimum 8 characters with uppercase, lowercase, number, and special character"
               />
-            </div>
-
-            <div>
-              <label>RBAC Security Role</label>
-              <select value={role} onChange={e => setRole(e.target.value)} required>
-                <option value="standard">Standard User (Tests & Grade Viewing)</option>
-                <option value="admin">Administrator (Full SOC Rights)</option>
-              </select>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', borderTop: '1px solid var(--color-border)', paddingTop: '1.25rem', marginTop: '0.5rem' }}>

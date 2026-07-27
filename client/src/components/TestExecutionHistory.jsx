@@ -1,12 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { History, Search, RefreshCw, ExternalLink, Trash2 } from 'lucide-react';
+import { History, Search, RefreshCw, ExternalLink, Trash2, KeyRound, Eye, EyeOff, X, Mail, Copy, Send } from 'lucide-react';
 
 export default function TestExecutionHistory({ user, addToast }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
+  const [credentialSession, setCredentialSession] = useState(null);
+  const [credentialEmail, setCredentialEmail] = useState('');
+  const [credentialPassword, setCredentialPassword] = useState('');
+  const [showCredentialPassword, setShowCredentialPassword] = useState(false);
+  const [loadingCredentials, setLoadingCredentials] = useState(false);
+  const [savingCredentials, setSavingCredentials] = useState(false);
+  const [emailDraftSession, setEmailDraftSession] = useState(null);
+  const [emailDraft, setEmailDraft] = useState(null);
+  const [loadingEmailDraft, setLoadingEmailDraft] = useState(false);
+  const [sendingCandidateEmail, setSendingCandidateEmail] = useState(false);
 
   const fetchHistory = async () => {
     try {
@@ -50,6 +60,85 @@ export default function TestExecutionHistory({ user, addToast }) {
       fetchHistory();
     } catch (err) {
       addToast(err.message, 'error');
+    }
+  };
+
+  const openCredentials = async (session) => {
+    setCredentialSession(session);
+    setCredentialEmail(session.candidate_email || '');
+    setCredentialPassword('');
+    setShowCredentialPassword(false);
+    setLoadingCredentials(true);
+    try {
+      const credentials = await api.getCandidateCredentials(session.id);
+      setCredentialEmail(credentials.candidate_email);
+      setCredentialPassword(credentials.candidate_password);
+    } catch (err) {
+      addToast(err.message, 'error');
+      setCredentialSession(null);
+    } finally {
+      setLoadingCredentials(false);
+    }
+  };
+
+  const handleSaveCredentials = async (event) => {
+    event.preventDefault();
+    if (!credentialSession) return;
+    try {
+      setSavingCredentials(true);
+      await api.updateCandidateCredentials(credentialSession.id, credentialEmail, credentialPassword);
+      addToast('Candidate login credentials updated.');
+      setCredentialSession(null);
+      await fetchHistory();
+    } catch (err) {
+      addToast(err.message, 'error');
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+
+  const openEmailDraft = async (session) => {
+    setEmailDraftSession(session);
+    setEmailDraft(null);
+    setLoadingEmailDraft(true);
+    try {
+      const draft = await api.getCandidateEmailTemplate(session.id);
+      setEmailDraft(draft);
+    } catch (err) {
+      addToast(err.message, 'error');
+      setEmailDraftSession(null);
+    } finally {
+      setLoadingEmailDraft(false);
+    }
+  };
+
+  const copyDraftField = async (value, label) => {
+    try {
+      await api.copyText(value);
+      addToast(`${label} copied to clipboard.`);
+    } catch {
+      addToast(`${label} could not be copied.`, 'error');
+    }
+  };
+
+  const sendEmailDraft = async () => {
+    if (!emailDraft) return;
+    if (emailDraft.emailTemplate.includes(emailDraft.sessionLinkPlaceholder)) {
+      addToast('Replace the session-link placeholder before sending.', 'warning');
+      return;
+    }
+    try {
+      setSendingCandidateEmail(true);
+      const result = await api.sendCandidateEmail(
+        emailDraft.candidateEmail,
+        emailDraft.emailSubject,
+        emailDraft.emailTemplate
+      );
+      addToast(result.message);
+    } catch (err) {
+      addToast(err.message, 'error');
+    } finally {
+      setSendingCandidateEmail(false);
     }
   };
 
@@ -173,6 +262,9 @@ export default function TestExecutionHistory({ user, addToast }) {
                       )}
                     </div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{session.candidate_email}</div>
+                    {!session.candidate_account_active && (
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Temporary account removed</div>
+                    )}
                   </td>
                   <td>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
@@ -200,10 +292,30 @@ export default function TestExecutionHistory({ user, addToast }) {
                   <td>
                     <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
                       {session.status === 'completed' && (
-                        <a href={`#/results/${session.id}`} className="btn btn-accent btn-sm" style={{ display: 'inline-flex', padding: '0.2rem 0.4rem', fontSize: '0.75rem', alignItems: 'center', gap: '0.25rem' }}>
+                        <a href={`#/admin-results/${session.id}`} className="btn btn-accent btn-sm" style={{ display: 'inline-flex', padding: '0.2rem 0.4rem', fontSize: '0.75rem', alignItems: 'center', gap: '0.25rem' }}>
                           <span>Scorecard</span>
                           <ExternalLink size={12} />
                         </a>
+                      )}
+                      {session.candidate_account_active && (
+                        <button
+                          onClick={() => openCredentials(session)}
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center' }}
+                          title="View or edit candidate login credentials"
+                        >
+                          <KeyRound size={12} />
+                        </button>
+                      )}
+                      {session.status === 'pending' && session.candidate_account_active && (
+                        <button
+                          onClick={() => openEmailDraft(session)}
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center' }}
+                          title="Open candidate email"
+                        >
+                          <Mail size={12} />
+                        </button>
                       )}
                       <button 
                         onClick={() => handleDeleteSession(session.id)} 
@@ -228,6 +340,135 @@ export default function TestExecutionHistory({ user, addToast }) {
           </tbody>
         </table>
       </div>
+
+      {credentialSession && (
+        <div className="modal-overlay">
+          <div className="modal-content animate-fade" style={{ maxWidth: '460px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.75rem', marginBottom: '1.25rem' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Candidate Login Credentials</h3>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem' }}>{credentialSession.test_title}</div>
+              </div>
+              <button type="button" onClick={() => setCredentialSession(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveCredentials} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div>
+                <label>Candidate Email</label>
+                <input
+                  type="email"
+                  value={credentialEmail}
+                  onChange={event => setCredentialEmail(event.target.value)}
+                  disabled={loadingCredentials}
+                  required
+                />
+              </div>
+
+              <div>
+                <label>Candidate Password</label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showCredentialPassword ? 'text' : 'password'}
+                    value={credentialPassword}
+                    onChange={event => setCredentialPassword(event.target.value)}
+                    placeholder={loadingCredentials ? 'Loading...' : 'Set a new password'}
+                    disabled={loadingCredentials}
+                    required
+                    style={{ paddingRight: '2.8rem' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCredentialPassword(value => !value)}
+                    aria-label={showCredentialPassword ? 'Hide password' : 'Show password'}
+                    title={showCredentialPassword ? 'Hide password' : 'Show password'}
+                    style={{
+                      position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)',
+                      border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                      padding: '0.2rem', display: 'inline-flex', alignItems: 'center'
+                    }}
+                  >
+                    {showCredentialPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <button type="button" className="btn btn-accent btn-sm" onClick={() => setCredentialSession(null)}>Cancel</button>
+                <button type="submit" className="btn btn-primary btn-sm" disabled={savingCredentials || loadingCredentials}>
+                  {savingCredentials ? 'Saving...' : 'Save Credentials'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {emailDraftSession && (
+        <div className="modal-overlay">
+          <div className="modal-content animate-fade" style={{ maxWidth: '720px', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.75rem', marginBottom: '1.25rem' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Candidate Email</h3>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                  {emailDraftSession.candidate_email}
+                </div>
+              </div>
+              <button type="button" onClick={() => setEmailDraftSession(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <X size={20} />
+              </button>
+            </div>
+
+            {loadingEmailDraft || !emailDraft ? (
+              <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
+                <RefreshCw className="animate-spin" size={28} style={{ color: 'var(--color-primary)' }} />
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div>
+                  <label>Email Subject</label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input
+                      type="text"
+                      value={emailDraft.emailSubject}
+                      onChange={event => setEmailDraft(current => ({ ...current, emailSubject: event.target.value }))}
+                    />
+                    <button type="button" onClick={() => copyDraftField(emailDraft.emailSubject, 'Email subject')} className="btn btn-secondary btn-sm" title="Copy email subject">
+                      <Copy size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label>Email Text</label>
+                  <textarea
+                    value={emailDraft.emailTemplate}
+                    onChange={event => setEmailDraft(current => ({ ...current, emailTemplate: event.target.value }))}
+                    rows={20}
+                    style={{ width: '100%', resize: 'vertical', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '0.82rem', lineHeight: 1.45 }}
+                  />
+                  <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '0.4rem' }}>
+                    Replace {emailDraft.sessionLinkPlaceholder} with the session link before sending.
+                  </small>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: '0.75rem', borderTop: '1px solid var(--color-border)', paddingTop: '1rem' }}>
+                  <button type="button" onClick={() => copyDraftField(emailDraft.emailTemplate, 'Email text')} className="btn btn-primary btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <Copy size={14} />
+                    Copy Email Text
+                  </button>
+                  <button type="button" onClick={sendEmailDraft} className="btn btn-secondary btn-sm" disabled={sendingCandidateEmail} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                    {sendingCandidateEmail ? <RefreshCw className="animate-spin" size={14} /> : <Send size={14} />}
+                    {sendingCandidateEmail ? 'Sending...' : 'Send Email'}
+                  </button>
+                  <button type="button" onClick={() => setEmailDraftSession(null)} className="btn btn-accent btn-sm">Close</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

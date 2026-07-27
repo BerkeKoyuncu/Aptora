@@ -67,17 +67,8 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
   const fetchQuestionsAndAdvices = async () => {
     try {
       setLoading(true);
-      if (user.role === 'admin' && !isAdviceOnly) {
-        const [qRes, aRes] = await Promise.all([
-          api.getQuestions(),
-          api.getAdvices()
-        ]);
-        setQuestions(qRes);
-        setAdvices(aRes);
-      } else {
-        const aRes = await api.getAdvices();
-        setAdvices(aRes);
-      }
+      const qRes = await api.getQuestions();
+      setQuestions(qRes);
     } catch (err) {
       addToast(err.message, 'error');
     } finally {
@@ -171,7 +162,8 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
     try {
       const escapeCSV = (text) => {
         if (text === null || text === undefined) return '';
-        const str = String(text);
+        let str = String(text);
+        if (/^\s*[=+\-@]/.test(str)) str = `'${str}`;
         if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
           return `"${str.replace(/"/g, '""')}"`;
         }
@@ -324,12 +316,9 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
 
   const handleDownloadTemplate = async () => {
     try {
-      const token = localStorage.getItem('aptora_token');
       const response = await fetch(`${api.API_BASE}/questions/template`, {
         method: 'GET',
-        headers: {
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        }
+        credentials: 'include'
       });
       if (!response.ok) {
         throw new Error('Failed to download template.');
@@ -814,11 +803,9 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
       {/* Header Panel */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h2>{isAdviceOnly ? 'Submit Question Advice' : 'Question Database Management'}</h2>
+          <h2>Question Database Management</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            {isAdviceOnly 
-              ? 'Recommend sample questions to administrators to expand the cyber concepts catalog.' 
-              : 'Add, update, or delete live questions. Review user suggestions.'}
+            Add, update, import, export, or delete assessment questions.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.75rem' }}>
