@@ -1,30 +1,34 @@
-# Dependency directories (both root, server, and client)
+# Dependencies
 node_modules/
-client/node_modules/
-server/node_modules/
+.npm-cache/
 
-# Production/build outputs
+# Generated build and release artifacts
+.build/
+dist/
 client/dist/
 client/dist-ssr/
+client/installer-dist/
 
-# SQLite database file (excludes local live databases from git)
+# Local runtime data
 server/database.sqlite
+server/database.sqlite-*
 server/database.sqlite-journal
+*.pid
 
-# Environment variables & secrets
+# Environment variables and secrets
 .env
 .env.local
 .env.*.local
 
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# System & Editor files
+# Operating system and editor files
 .DS_Store
 Thumbs.db
 .vscode/

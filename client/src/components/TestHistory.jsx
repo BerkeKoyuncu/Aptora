@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { FileText, RefreshCw, Mail, CheckCircle, Trash2, Play, Copy, Send } from 'lucide-react';
+import { RefreshCw, Mail, CheckCircle, Trash2, Copy, Send } from 'lucide-react';
 import { formatDateUK } from '../utils/dateFormat';
 
 export default function TestHistory({ user, addToast }) {

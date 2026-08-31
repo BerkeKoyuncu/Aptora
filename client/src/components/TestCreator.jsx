@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { HelpCircle, RefreshCw, FileText, CheckSquare, Square, Info } from 'lucide-react';
+import { RefreshCw, FileText, CheckSquare, Square } from 'lucide-react';
 
 const DIFFICULTY_LABELS = { 1: 'Beginner', 2: 'Elementary', 3: 'Intermediate', 4: 'Advanced', 5: 'Expert' };
 
-export default function TestCreator({ user, addToast, onViewMailbox }) {
+export default function TestCreator({ addToast }) {
   const [title, setTitle] = useState('');
   const [numQuestions, setNumQuestions] = useState(10);
   const [isRandom, setIsRandom] = useState(true);
@@ -93,17 +93,6 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
       ...prev,
       [level]: num
     }));
-  };
-
-  const loadBellCurve = () => {
-    setDist({
-      '1': 10,
-      '2': 20,
-      '3': 40,
-      '4': 20,
-      '5': 10
-    });
-    addToast('Default bell curve distribution loaded.');
   };
 
   const handleManualQuestionToggle = (qId) => {
@@ -336,7 +325,7 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
             <input 
               type="number" 
               min="1"
-              max="360"
+              max="240"
               value={duration} 
               onChange={e => setDuration(e.target.value)} 
               required 

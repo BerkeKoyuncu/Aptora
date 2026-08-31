@@ -11,6 +11,7 @@ const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || (isProduction ? '' : 'a1b2c
 const IV_LENGTH = 12;
 const SESSION_COOKIE = 'aptora_session';
 const CANDIDATE_SESSION_COOKIE = 'aptora_candidate_session';
+const CANDIDATE_SESSION_MAX_AGE_MS = 5 * 60 * 60 * 1000;
 const JWT_OPTIONS = { algorithm: 'HS256', issuer: 'aptora', audience: 'aptora-admin' };
 const CANDIDATE_JWT_OPTIONS = { algorithm: 'HS256', issuer: 'aptora', audience: 'aptora-candidate' };
 const PASSWORD_POLICY_MESSAGE = 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.';
@@ -115,7 +116,7 @@ const candidateCookieOptions = () => ({
   secure: secureCookies,
   sameSite: 'strict',
   path: '/',
-  maxAge: 4 * 60 * 60 * 1000
+  maxAge: CANDIDATE_SESSION_MAX_AGE_MS
 });
 
 const setCandidateSessionCookie = (res, candidate) => {
@@ -125,7 +126,7 @@ const setCandidateSessionCookie = (res, candidate) => {
     session_key: candidate.candidate_session_key || undefined,
     role: 'candidate',
     jti: crypto.randomUUID()
-  }, JWT_SECRET, { ...CANDIDATE_JWT_OPTIONS, expiresIn: '4h' });
+  }, JWT_SECRET, { ...CANDIDATE_JWT_OPTIONS, expiresIn: '5h' });
   res.cookie(CANDIDATE_SESSION_COOKIE, token, candidateCookieOptions());
 };
 

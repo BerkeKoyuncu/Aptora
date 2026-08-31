@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../api';
-import { Shield, Clock, ArrowLeft, ArrowRight, CheckCircle, RefreshCw, UserCheck, AlertTriangle, Sun, Moon, Download, LogOut } from 'lucide-react';
+import { Clock, ArrowLeft, ArrowRight, CheckCircle, RefreshCw, UserCheck, AlertTriangle, Sun, Moon, Download, LogOut } from 'lucide-react';
 import EDataBranding from './EDataBranding';
 import TestResultsView from './TestResultsView';
 import { formatTimeUK } from '../utils/dateFormat';
@@ -42,6 +42,24 @@ export default function TestRunner({ addToast, darkMode, setDarkMode, onSessionI
     return true;
   }, []);
 
+  const handleExpiredFinalization = useCallback(async (err) => {
+    if (err?.code !== 'SESSION_EXPIRED_FINALIZED') return false;
+    autosaveEnabledRef.current = false;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    setIsExamActive(false);
+    try {
+      const result = await api.getCandidateSessionResult();
+      setCompletedResults(result);
+      setSessionInfo(current => ({ ...current, ...result, status: 'completed' }));
+      addToastRef.current('Time elapsed. Your last saved responses were submitted.', 'warning');
+    } catch (resultError) {
+      if (!handleCandidateSessionError(resultError)) {
+        addToastRef.current(resultError.message, 'error');
+      }
+    }
+    return true;
+  }, [handleCandidateSessionError]);
+
   // Load session meta details
   useEffect(() => {
     const loadSession = async () => {
@@ -74,13 +92,15 @@ export default function TestRunner({ addToast, darkMode, setDarkMode, onSessionI
           setTimeLeft((info.duration || 20) * 60);
         }
       } catch (err) {
-        if (!handleCandidateSessionError(err)) addToastRef.current(err.message, 'error');
+        if (!await handleExpiredFinalization(err) && !handleCandidateSessionError(err)) {
+          addToastRef.current(err.message, 'error');
+        }
       } finally {
         setLoading(false);
       }
     };
     loadSession();
-  }, [handleCandidateSessionError]);
+  }, [handleCandidateSessionError, handleExpiredFinalization]);
 
   // Focus loss tracking thread
   useEffect(() => {
@@ -176,6 +196,7 @@ export default function TestRunner({ addToast, darkMode, setDarkMode, onSessionI
         setLastSavedAt(result.responses_updated_at ? new Date(`${result.responses_updated_at}Z`) : new Date());
       }
     } catch (err) {
+      if (await handleExpiredFinalization(err)) return;
       if (handleCandidateSessionError(err)) return;
       if (version === autosaveVersionRef.current && autosaveEnabledRef.current) {
         setSaveStatus(navigator.onLine ? 'error' : 'offline');
@@ -414,6 +435,15 @@ export default function TestRunner({ addToast, darkMode, setDarkMode, onSessionI
           <div style={{ borderTop: '1px solid var(--color-border)', marginTop: '1.5rem', paddingTop: '1rem' }}>
             <EDataBranding variant={darkMode ? 'dark' : 'light'} />
           </div>
+          <button
+            type="button"
+            onClick={handleCandidateLogout}
+            className="btn btn-accent"
+            style={{ width: '100%', marginTop: '1rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+          >
+            <LogOut size={16} />
+            Log out
+          </button>
         </div>
       </div>
     );
@@ -741,6 +771,7 @@ export default function TestRunner({ addToast, darkMode, setDarkMode, onSessionI
         initialResults={completedResults}
         candidateView
         addToast={addToast}
+        onCandidateLogout={handleCandidateLogout}
         onExitExamBrowser={requireSEB && isInSEB
           ? () => window.location.assign('/seb/quit')
           : null}

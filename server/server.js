@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const db = require('./db');
@@ -71,6 +72,10 @@ const configuredAuthLimit = Number.parseInt(process.env.AUTH_RATE_LIMIT || '15',
 const AUTH_MAX_ATTEMPTS = Number.isFinite(configuredAuthLimit) && configuredAuthLimit > 0
   ? configuredAuthLimit
   : 15;
+const AUTH_GLOBAL_MAX_FAILURES = 300;
+const SESSION_WINDOW_MS = 60 * 1000;
+const SESSION_MAX_REQUESTS = 120;
+const SESSION_GLOBAL_MAX_REQUESTS = 5000;
 
 const setRateLimitBucket = (key, entry) => {
   if (!rateLimitBuckets.has(key) && rateLimitBuckets.size >= MAX_RATE_LIMIT_BUCKETS) {
@@ -80,40 +85,73 @@ const setRateLimitBucket = (key, entry) => {
   rateLimitBuckets.set(key, entry);
 };
 
+const getRateLimitBucket = (key, windowMs, now = Date.now()) => {
+  const current = rateLimitBuckets.get(key);
+  if (!current || current.resetAt <= now) return { count: 0, resetAt: now + windowMs };
+  return current;
+};
+
+const incrementRateLimitBucket = (key, windowMs, now = Date.now()) => {
+  const entry = getRateLimitBucket(key, windowMs, now);
+  entry.count += 1;
+  setRateLimitBucket(key, entry);
+  return entry;
+};
+
+const hashRateLimitIdentity = (value) => crypto
+  .createHash('sha256')
+  .update(String(value || ''), 'utf8')
+  .digest('hex')
+  .slice(0, 24);
+
+const readCookie = (req, name) => {
+  const raw = String(req.headers.cookie || '');
+  const entry = raw.split(';').map(value => value.trim()).find(value => value.startsWith(`${name}=`));
+  return entry ? decodeURIComponent(entry.slice(name.length + 1)) : '';
+};
+
 const authRateLimiter = (req, res, next) => {
   if (!['/login', '/verify-2fa', '/complete-initial-2fa'].includes(req.path)) return next();
 
   const now = Date.now();
-  const key = `auth:${req.ip}`;
-  const current = rateLimitBuckets.get(key);
-  const entry = !current || current.resetAt <= now
-    ? { count: 0, resetAt: now + AUTH_WINDOW_MS }
-    : current;
-
-  entry.count += 1;
-  setRateLimitBucket(key, entry);
+  const suppliedIdentity = req.path === '/login'
+    ? String(req.body?.username || '').trim().toLowerCase()
+    : String(req.body?.tempToken || '');
+  const identity = suppliedIdentity || 'missing-identity';
+  const key = `auth:${req.ip}:${req.path}:${hashRateLimitIdentity(identity)}`;
+  const globalKey = `auth-global:${req.ip}`;
+  const entry = getRateLimitBucket(key, AUTH_WINDOW_MS, now);
+  const globalEntry = getRateLimitBucket(globalKey, AUTH_WINDOW_MS, now);
   res.setHeader('RateLimit-Limit', AUTH_MAX_ATTEMPTS);
   res.setHeader('RateLimit-Remaining', Math.max(0, AUTH_MAX_ATTEMPTS - entry.count));
   res.setHeader('RateLimit-Reset', Math.ceil(entry.resetAt / 1000));
 
-  if (entry.count > AUTH_MAX_ATTEMPTS) {
+  if (entry.count >= AUTH_MAX_ATTEMPTS || globalEntry.count >= AUTH_GLOBAL_MAX_FAILURES) {
     res.setHeader('Retry-After', Math.ceil((entry.resetAt - now) / 1000));
     return res.status(429).json({ error: 'Too many authentication attempts. Please try again later.' });
   }
+
+  // Only failed authentication responses consume the per-account and global
+  // budgets. Successful candidate logins from a shared RDP host do not block
+  // other candidates using the same source IP.
+  res.once('finish', () => {
+    if (![400, 401, 403].includes(res.statusCode)) return;
+    incrementRateLimitBucket(key, AUTH_WINDOW_MS);
+    incrementRateLimitBucket(globalKey, AUTH_WINDOW_MS);
+  });
   next();
 };
 
 const publicSessionRateLimiter = (req, res, next) => {
   if (!req.path.startsWith('/sessions/') && !req.path.startsWith('/candidate/')) return next();
   const now = Date.now();
-  const windowMs = 60 * 1000;
-  const limit = 120;
-  const key = `session:${req.ip}`;
-  const current = rateLimitBuckets.get(key);
-  const entry = !current || current.resetAt <= now ? { count: 0, resetAt: now + windowMs } : current;
-  entry.count += 1;
-  setRateLimitBucket(key, entry);
-  if (entry.count > limit) {
+  const candidateToken = readCookie(req, 'aptora_candidate_session');
+  const identity = candidateToken ? hashRateLimitIdentity(candidateToken) : `ip:${req.ip}`;
+  const key = `session:${identity}`;
+  const globalKey = `session-global:${req.ip}`;
+  const entry = incrementRateLimitBucket(key, SESSION_WINDOW_MS, now);
+  const globalEntry = incrementRateLimitBucket(globalKey, SESSION_WINDOW_MS, now);
+  if (entry.count > SESSION_MAX_REQUESTS || globalEntry.count > SESSION_GLOBAL_MAX_REQUESTS) {
     res.setHeader('Retry-After', Math.ceil((entry.resetAt - now) / 1000));
     return res.status(429).json({ error: 'Too many session requests. Please try again shortly.' });
   }
@@ -127,7 +165,8 @@ setInterval(() => {
   }
 }, AUTH_WINDOW_MS).unref();
 
-// Body parsers
+// Body parsers run before the authentication limiter so login failures can be
+// isolated by normalized account identity instead of source IP alone.
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ limit: '256kb', extended: true }));
 
@@ -156,6 +195,9 @@ app.use('/api', (req, res, next) => {
   next();
 });
 app.use('/api', routes);
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
+});
 
 // Serve static client assets in production
 const clientBuildPath = path.join(__dirname, '../client/dist');
@@ -163,14 +205,17 @@ app.use(express.static(clientBuildPath));
 
 // Fallback index.html route for client-side routing in production SPA
 app.get('*', (req, res, next) => {
-  // If request is for /api, skip to error/not found
-  if (req.url.startsWith('/api')) {
-    return next();
+  // Missing static assets must not receive the SPA HTML document.
+  if (path.extname(req.path)) {
+    return res.status(404).type('text/plain').send('Not found');
   }
-  res.sendFile(path.join(clientBuildPath, 'index.html'), (err) => {
+
+  // Unknown browser routes receive the SPA shell with a real HTTP 404 status;
+  // the client renders the branded Not Found page.
+  res.status(404).sendFile(path.join(clientBuildPath, 'index.html'), (err) => {
     if (err) {
       // If client build isn't compiled yet, return a simple welcoming API message
-      res.status(200).send('Aptora Backend is Running. Frontend not yet compiled.');
+      res.status(404).type('text/plain').send('Aptora page not found. Frontend not yet compiled.');
     }
   });
 });
@@ -191,7 +236,15 @@ const startServer = async () => {
     console.log('Initializing SQLite Database...');
     await db.initDb();
     await db.run(`DELETE FROM security_audit_logs WHERE created_at < datetime('now', ?)`, [`-${auditRetentionDays} days`]);
+    await routes.finalizeExpiredSessions();
     console.log('Database initialized successfully.');
+
+    const expiredSessionTimer = setInterval(() => {
+      routes.finalizeExpiredSessions().catch(error => {
+        console.error('Expired assessment finalization failed:', error);
+      });
+    }, 30 * 1000);
+    expiredSessionTimer.unref();
 
     const httpServer = app.listen(PORT, listenHost, () => {
       if (pidFile) fs.writeFileSync(pidFile, String(process.pid), { encoding: 'ascii', mode: 0o600 });
@@ -205,6 +258,7 @@ const startServer = async () => {
     });
 
     const shutdown = signal => {
+      clearInterval(expiredSessionTimer);
       console.log(`${signal} received. Stopping Aptora...`);
       httpServer.close(() => {
         try {

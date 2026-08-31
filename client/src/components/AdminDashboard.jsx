@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import { History, FileText, Award, Shield, Plus, Mail, ExternalLink, RefreshCw, AlertTriangle, X, CheckCircle, Copy, Send } from 'lucide-react';
 
-export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
+export default function AdminDashboard({ addToast, onInviteCandidate }) {
   const [metrics, setMetrics] = useState({
     totalQuestions: 0,
     totalTests: 0,

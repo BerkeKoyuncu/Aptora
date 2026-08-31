@@ -28,6 +28,7 @@ const sha256 = (value) => crypto.createHash('sha256').update(value, 'utf8').dige
 const redactToken = (value) => String(value || '').replace(/[a-f0-9]{32}/gi, ':token');
 const SESSION_LINK_PLACEHOLDER = '[PASTE_SESSION_LINK_HERE]';
 const SEB_QUIT_PATH = '/seb/quit';
+const MAX_TEST_DURATION_MINUTES = 240;
 const formatTurkeyDateTimeUK = (value = new Date()) => new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Europe/Istanbul',
   day: '2-digit',
@@ -112,12 +113,12 @@ ${sebRequired
     ? `5. Safe Exam Browser is required. Download and open the SEB configuration when prompted, then continue the assessment inside SEB.
 6. Once the assessment starts, the ${duration}-minute timer cannot be paused. Do not close or refresh the assessment page.
 7. When you click Submit Assessment, a confirmation window will appear inside the assessment page. Select Submit Answers to finish or Continue Assessment to return to your questions.
-8. You will be able to review your detailed result immediately after submission.
+8. You will be able to review your score and domain summary immediately after submission.
 9. After reviewing your result, use the Exit Safe Exam Browser button to close the secure browser.
 10. Your candidate account is temporary and will be removed automatically after submission.`
     : `5. Once the assessment starts, the ${duration}-minute timer cannot be paused. Do not close or refresh the assessment page.
 6. When you click Submit Assessment, a confirmation window will appear inside the assessment page. Select Submit Answers to finish or Continue Assessment to return to your questions.
-7. You will be able to review your detailed result immediately after submission.
+7. You will be able to review your score and domain summary immediately after submission.
 8. Your candidate account is temporary and will be removed automatically after submission.`}
 
 Please do not share these credentials or the session link with anyone.
@@ -164,6 +165,76 @@ const sanitizeResponses = (responses, questions) => {
     sanitized[String(questionId)] = optionId;
   }
   return sanitized;
+};
+
+const scoreResponses = (questions, responses) => {
+  let scoredPoints = 0;
+  let totalPointsPossible = 0;
+  const domainBreakdown = {};
+
+  for (const question of questions) {
+    const points = Number(question.points || 0);
+    totalPointsPossible += points;
+    if (!domainBreakdown[question.domain]) {
+      domainBreakdown[question.domain] = { possible: 0, scored: 0 };
+    }
+    domainBreakdown[question.domain].possible += points;
+    const selectedOptionId = responses[String(question.id)];
+    const correctOption = question.options.find(option => option.isCorrect);
+    if (correctOption && String(selectedOptionId) === String(correctOption.id)) {
+      scoredPoints += points;
+      domainBreakdown[question.domain].scored += points;
+    }
+  }
+
+  return { scoredPoints, totalPointsPossible, domainBreakdown };
+};
+
+const finalizeExpiredSession = async (session) => {
+  if (!session || session.status !== 'active' || !session.started_at) return false;
+  const duration = Number.parseInt(session.duration, 10);
+  if (!Number.isInteger(duration) || duration < 1) return false;
+
+  const questions = JSON.parse(session.questions_snapshot || '[]');
+  const storedResponses = JSON.parse(session.responses || '{}');
+  const responses = sanitizeResponses(storedResponses, questions) || {};
+  const { scoredPoints, totalPointsPossible } = scoreResponses(questions, responses);
+  const durationModifier = `+${duration} minutes`;
+  const graceModifier = `+${sessionSubmitGraceSeconds} seconds`;
+  const update = await db.run(
+    `UPDATE test_sessions
+     SET completed_at = datetime(started_at, ?), score = ?, total_points = ?, status = 'completed',
+         responses = ?, result_expires_at = datetime('now', ?)
+     WHERE id = ? AND status = 'active'
+       AND CURRENT_TIMESTAMP > datetime(started_at, ?, ?)`,
+    [durationModifier, scoredPoints, totalPointsPossible, JSON.stringify(responses),
+      `+${resultLinkTtlHours} hours`, session.id, durationModifier, graceModifier]
+  );
+  if (update.changes !== 1) return false;
+  await db.run('DELETE FROM candidate_accounts WHERE session_id = ?', [session.id]);
+  return true;
+};
+
+const finalizeExpiredSessions = async () => {
+  const sessions = await db.query(
+    `SELECT ts.*, t.duration
+     FROM test_sessions ts
+     JOIN tests t ON t.id = ts.test_id
+     WHERE ts.status = 'active' AND ts.started_at IS NOT NULL
+       AND CURRENT_TIMESTAMP > datetime(
+         ts.started_at, '+' || t.duration || ' minutes', ?
+       )`,
+    [`+${sessionSubmitGraceSeconds} seconds`]
+  );
+  let finalized = 0;
+  for (const session of sessions) {
+    try {
+      if (await finalizeExpiredSession(session)) finalized += 1;
+    } catch (error) {
+      console.error(`Failed to finalize expired assessment ${redactToken(session.id)}:`, error.message);
+    }
+  }
+  return finalized;
 };
 
 async function audit(req, action, targetType = null, targetId = null, details = null) {
@@ -996,12 +1067,16 @@ router.get('/tests', authenticateToken, async (req, res) => {
 router.post('/tests', authenticateToken, async (req, res) => {
   const { title, num_questions = 10, difficulty_distribution, domains, is_random = true, selected_questions = [], duration, require_seb } = req.body;
   const passThreshold = Number.parseInt(req.body?.pass_threshold ?? '70', 10);
+  const testDuration = duration === undefined ? 20 : Number(duration);
 
   if (!title) {
     return res.status(400).json({ error: 'Test title is required' });
   }
   if (!Number.isInteger(passThreshold) || passThreshold < 0 || passThreshold > 100) {
     return res.status(400).json({ error: 'Pass threshold must be between 0 and 100' });
+  }
+  if (!Number.isInteger(testDuration) || testDuration < 1 || testDuration > MAX_TEST_DURATION_MINUTES) {
+    return res.status(400).json({ error: `Duration must be between 1 and ${MAX_TEST_DURATION_MINUTES} minutes` });
   }
 
   // Set default domains (all domains by default)
@@ -1025,7 +1100,6 @@ router.post('/tests', authenticateToken, async (req, res) => {
   const targetDist = difficulty_distribution || defaultDist;
 
   try {
-    const testDuration = parseInt(duration) || 20;
     const testRequireSeb = require_seb === true || require_seb === 1 || require_seb === 'true' ? 1 : 0;
     // 1. Insert test meta
     const result = await db.run(
@@ -1535,7 +1609,7 @@ router.post('/sessions', authenticateToken, async (req, res) => {
 // Retrieve session info (Public access: needed by candidate BEFORE logging in)
 router.get('/sessions/:id', requireCandidateAccount, async (req, res) => {
   try {
-    const session = await db.get(`
+    let session = await db.get(`
       SELECT ts.*, t.title as test_title, t.num_questions, t.duration, t.require_seb
       FROM test_sessions ts
       JOIN tests t ON ts.test_id = t.id
@@ -1544,6 +1618,14 @@ router.get('/sessions/:id', requireCandidateAccount, async (req, res) => {
 
     if (!session) {
       return res.status(404).json({ error: 'Test session not found' });
+    }
+    if (session.status === 'active' && await finalizeExpiredSession(session)) {
+      session = await db.get(`
+        SELECT ts.*, t.title as test_title, t.num_questions, t.duration, t.require_seb
+        FROM test_sessions ts
+        JOIN tests t ON ts.test_id = t.id
+        WHERE ts.id = ?
+      `, [req.params.id]);
     }
     if (session.status === 'pending' && session.expires_at && new Date(`${session.expires_at}Z`) <= new Date()) {
       return res.status(410).json({ error: 'This candidate account has expired' });
@@ -1754,9 +1836,10 @@ router.get('/sessions/:id/take', requireCandidateAccount, async (req, res) => {
     const session = await db.get(`
       SELECT ts.*, t.duration, t.require_seb,
              datetime(ts.started_at, '+' || t.duration || ' minutes') AS deadline,
-             CASE WHEN CURRENT_TIMESTAMP >= datetime(ts.started_at, '+' || t.duration || ' minutes') THEN 1 ELSE 0 END AS expired
+             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || t.duration || ' minutes', ?)
+                  THEN 1 ELSE 0 END AS expired
       FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
-    `, [req.params.id]);
+    `, [`+${sessionSubmitGraceSeconds} seconds`, req.params.id]);
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
@@ -1765,7 +1848,11 @@ router.get('/sessions/:id/take', requireCandidateAccount, async (req, res) => {
       return res.status(400).json({ error: 'Session is not active' });
     }
     if (session.expired) {
-      return res.status(410).json({ error: 'The server-enforced test duration has elapsed' });
+      await finalizeExpiredSession(session);
+      return res.status(409).json({
+        error: 'The assessment time elapsed and the last saved responses were submitted.',
+        code: 'SESSION_EXPIRED_FINALIZED'
+      });
     }
     if (!enforceSeb(req, res, session)) return;
 
@@ -1802,12 +1889,19 @@ router.put('/sessions/:id/responses', requireCandidateAccount, async (req, res) 
   try {
     const session = await db.get(`
       SELECT ts.*, t.duration, t.require_seb,
-             CASE WHEN CURRENT_TIMESTAMP >= datetime(ts.started_at, '+' || t.duration || ' minutes') THEN 1 ELSE 0 END AS expired
+             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || t.duration || ' minutes', ?)
+                  THEN 1 ELSE 0 END AS expired
       FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
-    `, [req.params.id]);
+    `, [`+${sessionSubmitGraceSeconds} seconds`, req.params.id]);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     if (session.status !== 'active') return res.status(409).json({ error: 'Session is not active' });
-    if (session.expired) return res.status(410).json({ error: 'The server-enforced test duration has elapsed' });
+    if (session.expired) {
+      await finalizeExpiredSession(session);
+      return res.status(409).json({
+        error: 'The assessment time elapsed and the last saved responses were submitted.',
+        code: 'SESSION_EXPIRED_FINALIZED'
+      });
+    }
     if (!enforceSeb(req, res, session)) return;
 
     const questions = JSON.parse(session.questions_snapshot || '[]');
@@ -1858,7 +1952,7 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
     }
 
     if (session.status === 'completed') {
-      const completedResult = await loadSessionResult(req.params.id, true);
+      const completedResult = await loadSessionResult(req.params.id, false);
       if (completedResult.errorStatus) {
         return res.status(completedResult.errorStatus).json({ error: completedResult.error });
       }
@@ -1876,44 +1970,15 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
       return res.status(400).json({ error: 'Responses contain an invalid question or option' });
     }
     if (session.expired) {
-      const total = questions.reduce((sum, question) => sum + Number(question.points || 0), 0);
-      await db.run(
-        `UPDATE test_sessions SET completed_at = CURRENT_TIMESTAMP, score = 0, total_points = ?,
-         status = 'completed', responses = '{}', result_expires_at = datetime('now', ?)
-         WHERE id = ? AND status = 'active'`,
-        [total, `+${resultLinkTtlHours} hours`, req.params.id]
-      );
-      await db.run('DELETE FROM candidate_accounts WHERE session_id = ?', [req.params.id]);
-      clearCandidateSessionCookie(res);
-      return res.status(410).json({ error: 'The server-enforced submission deadline has elapsed' });
+      await finalizeExpiredSession(session);
+      const completedResult = await loadSessionResult(req.params.id, false);
+      if (completedResult.errorStatus) {
+        return res.status(completedResult.errorStatus).json({ error: completedResult.error });
+      }
+      delete completedResult.result_expires_at;
+      return res.json(completedResult);
     }
-    let scoredPoints = 0;
-    let totalPointsPossible = 0;
-
-    // Tracks success breakdown per domain
-    // Schema: { [domain]: { possible: X, scored: Y } }
-    const domainBreakdown = {};
-
-    questions.forEach(q => {
-      totalPointsPossible += q.points;
-
-      if (!domainBreakdown[q.domain]) {
-        domainBreakdown[q.domain] = { possible: 0, scored: 0 };
-      }
-      domainBreakdown[q.domain].possible += q.points;
-
-      const selectedOptId = sanitizedResponses[q.id];
-      const correctOption = q.options.find(opt => opt.isCorrect);
-      const isCorrect = correctOption && String(selectedOptId) === String(correctOption.id);
-
-      let awardedPoints = 0;
-      if (isCorrect) {
-        awardedPoints = q.points;
-        scoredPoints += q.points;
-        domainBreakdown[q.domain].scored += q.points;
-      }
-
-    });
+    const { scoredPoints, totalPointsPossible } = scoreResponses(questions, sanitizedResponses);
 
     // Save submission records
     const update = await db.run(
@@ -1926,7 +1991,7 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
         req.params.id, session.duration, `+${sessionSubmitGraceSeconds} seconds`]
     );
     if (update.changes !== 1) return res.status(409).json({ error: 'Session was already submitted or expired' });
-    const result = await loadSessionResult(req.params.id, true);
+    const result = await loadSessionResult(req.params.id, false);
     await db.run('DELETE FROM candidate_accounts WHERE session_id = ?', [req.params.id]);
     // Keep the already-issued signed browser session only for short-lived result
     // recovery. The deleted account cannot be used to sign in again.
@@ -1993,7 +2058,8 @@ async function loadSessionResult(sessionId, includeFeedback, includeInternalRevi
       decided_at: session.decided_at
     } : {}),
     domainSuccessRates,
-    ...(includeFeedback ? { feedback, test_title: session.test_title } : {}),
+    test_title: session.test_title,
+    ...(includeFeedback ? { feedback } : {}),
     require_seb: !!session.require_seb,
     focus_lost_count: session.focus_lost_count || 0,
     result_expires_at: session.result_expires_at
@@ -2002,7 +2068,7 @@ async function loadSessionResult(sessionId, includeFeedback, includeInternalRevi
 
 router.get('/sessions/:id/result', requireCandidateAccount, async (req, res) => {
   try {
-    const result = await loadSessionResult(req.params.id, true);
+    const result = await loadSessionResult(req.params.id, false);
     if (result.errorStatus) return res.status(result.errorStatus).json({ error: result.error });
     delete result.result_expires_at;
     res.json(result);
@@ -2028,6 +2094,7 @@ router.get('/admin/session-results', authenticateToken, requireRole(['admin']), 
 // List all test sessions (Admin only)
 router.get('/sessions', authenticateToken, async (req, res) => {
   try {
+    await finalizeExpiredSessions();
     const sessions = await db.query(`
       SELECT ts.id, ts.candidate_email, ts.candidate_name, ts.started_at, ts.completed_at,
              ts.score, ts.total_points, ts.status, ts.focus_lost_count, ts.created_at,
@@ -2555,5 +2622,7 @@ router.post('/emails/bulk-delete', authenticateToken, requireRole(['admin']), as
     res.status(500).json({ error: safeError(err) });
   }
 });
+
+router.finalizeExpiredSessions = finalizeExpiredSessions;
 
 module.exports = router;

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import EDataBranding from './EDataBranding';
-import { Printer, Download, ArrowLeft, RefreshCw, Award, Clock, BookOpen, AlertCircle, CheckCircle, XCircle, LogOut } from 'lucide-react';
+import { Printer, Download, ArrowLeft, RefreshCw, Clock, AlertCircle, CheckCircle, XCircle, LogOut } from 'lucide-react';
 import { formatDateUK, formatDateTimeUK } from '../utils/dateFormat';
 
 const DIFFICULTY_LABELS = { 1: 'Beginner', 2: 'Elementary', 3: 'Intermediate', 4: 'Advanced', 5: 'Expert' };
@@ -29,6 +29,7 @@ export default function TestResultsView({
   adminView = false,
   initialResults = null,
   candidateView = false,
+  onCandidateLogout = null,
   onExitExamBrowser = null
 }) {
   const [results, setResults] = useState(initialResults);
@@ -182,6 +183,12 @@ export default function TestResultsView({
             <Printer size={16} />
             <span>Print Report (PDF)</span>
           </button>
+          {candidateView && onCandidateLogout && (
+            <button onClick={onCandidateLogout} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <LogOut size={16} />
+              <span>Log out and clear session</span>
+            </button>
+          )}
           {onExitExamBrowser && (
             <button onClick={onExitExamBrowser} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <LogOut size={16} />
@@ -193,7 +200,7 @@ export default function TestResultsView({
 
       {candidateView && (
         <div className="card no-print" style={{ borderLeft: '4px solid var(--color-success)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-          Your test is complete and your temporary login account has been removed. You can review, print, or export this result while this page remains open.
+          Your test is complete and your temporary login account has been removed. Question-level answers are available only to administrators. Log out before closing the remote session.
         </div>
       )}
 

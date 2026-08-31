@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { Mail, Shield, CheckCircle, RefreshCw, Send, Check } from 'lucide-react';
+import { Mail, Shield, RefreshCw, Send } from 'lucide-react';
 
 export default function EmailSettings({ user, addToast }) {
   const [settings, setSettings] = useState({

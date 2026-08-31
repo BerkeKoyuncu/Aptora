@@ -2,12 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { api } from './api';
 import {
   Shield, Key, Users, Database, Mail, History, FileText, CheckCircle,
-  XCircle, AlertCircle, Plus, Edit, Trash2, LogOut, Settings, Award,
-  Clock, ArrowRight, ArrowLeft, RefreshCw, Check, X, Download, Printer, ChevronRight,
+  XCircle, AlertCircle, Plus, LogOut, Settings,
+  RefreshCw, ChevronRight,
   Sun, Moon, Menu, ChevronLeft, Eye, EyeOff, ShieldCheck, Info
 } from 'lucide-react';
 
-// Subcomponents (we will create these next)
 import AdminDashboard from './components/AdminDashboard';
 import TestCreator from './components/TestCreator';
 import QuestionDb from './components/QuestionDb';
@@ -21,10 +20,30 @@ import EDataBranding from './components/EDataBranding';
 import EmailSettings from './components/EmailSettings';
 import AuditLog from './components/AuditLog';
 import SystemInformation from './components/SystemInformation';
+import NotFound from './components/NotFound';
+
+const resolveBrowserRoute = () => {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (pathname !== '/' && pathname !== '/index.html') {
+    return { path: 'not-found', params: {} };
+  }
+
+  const hash = window.location.hash;
+  if (!hash || hash === '#' || hash === '#/') {
+    return { path: 'home', params: {} };
+  }
+
+  const adminResultMatch = hash.match(/^#\/admin-results\/([a-f0-9]{32})$/i);
+  if (adminResultMatch) {
+    return { path: 'admin-results', params: { sessionId: adminResultMatch[1] } };
+  }
+
+  return { path: 'not-found', params: {} };
+};
 
 export default function App() {
   // Navigation / Routing state
-  const [currentRoute, setCurrentRoute] = useState({ path: 'home', params: {} });
+  const [currentRoute, setCurrentRoute] = useState(resolveBrowserRoute);
 
   // Auth state
   const [user, setUser] = useState(null);
@@ -33,7 +52,7 @@ export default function App() {
 
   // Settings / Profile states
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
-  const [openAddModalOnLoad, setOpenAddModalOnLoad] = useState(false);
+  const [, setOpenAddModalOnLoad] = useState(false);
   const [twofaSetup, setTwofaSetup] = useState(null); // { secret, qrCodeUrl }
   const [twofaCode, setTwofaCode] = useState('');
   const [twofaDisableCode, setTwofaDisableCode] = useState('');
@@ -116,19 +135,15 @@ export default function App() {
 
   // Only administrator report deep links remain; candidates enter from the login page.
   useEffect(() => {
-    const handleHashChange = () => {
-      const hash = window.location.hash;
-      if (hash.startsWith('#/admin-results/')) {
-        const sessionId = hash.substring(16);
-        setCurrentRoute({ path: 'admin-results', params: { sessionId } });
-      } else {
-        setCurrentRoute({ path: 'home', params: {} });
-      }
-    };
+    const handleLocationChange = () => setCurrentRoute(resolveBrowserRoute());
 
-    window.addEventListener('hashchange', handleHashChange);
-    handleHashChange();
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('popstate', handleLocationChange);
+    handleLocationChange();
+    return () => {
+      window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('popstate', handleLocationChange);
+    };
   }, []);
 
   // Fetch current user details on load
@@ -138,7 +153,7 @@ export default function App() {
       try {
         const me = await api.getMe();
         setUser(me);
-      } catch (err) {
+      } catch {
         setUser(null);
         try {
           const candidateMe = await api.getCandidateMe();
@@ -215,6 +230,10 @@ export default function App() {
         <p style={{ marginTop: '1rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Loading Aptora Security Environment...</p>
       </div>
     );
+  }
+
+  if (currentRoute.path === 'not-found') {
+    return <NotFound />;
   }
 
   if (candidate) {
@@ -433,11 +452,11 @@ export default function App() {
         {/* Workspace Panels */}
         <main style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>
           {activeTab === 'overview' && (
-            <AdminDashboard user={user} addToast={addToast} onInviteCandidate={() => setActiveTab('test-history')} />
+            <AdminDashboard addToast={addToast} onInviteCandidate={() => setActiveTab('test-history')} />
           )}
 
           {activeTab === 'creator' && (
-            <TestCreator user={user} addToast={addToast} onViewMailbox={() => setActiveTab('mailbox')} />
+            <TestCreator addToast={addToast} />
           )}
 
           {activeTab === 'test-history' && (
@@ -445,7 +464,7 @@ export default function App() {
           )}
 
           {activeTab === 'execution-history' && (
-            <TestExecutionHistory user={user} addToast={addToast} />
+            <TestExecutionHistory addToast={addToast} />
           )}
 
           {activeTab === 'questions' && user.role === 'admin' && (

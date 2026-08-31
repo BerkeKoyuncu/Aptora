@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { History, Search, RefreshCw, ExternalLink, Trash2, KeyRound, Eye, EyeOff, X, Mail, Copy, Send, CalendarClock, Ban, Activity } from 'lucide-react';
+import { Search, RefreshCw, ExternalLink, Trash2, KeyRound, Eye, EyeOff, X, Mail, Copy, Send, CalendarClock, Ban, Activity } from 'lucide-react';
 import { formatDateTimeUK } from '../utils/dateFormat';
 
 const formatServerDate = formatDateTimeUK;
 
-export default function TestExecutionHistory({ user, addToast }) {
+export default function TestExecutionHistory({ addToast }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');

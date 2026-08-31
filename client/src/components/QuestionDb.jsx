@@ -18,7 +18,7 @@ const getDifficultyBadgeStyle = (diff) => {
 
 export default function QuestionDb({ user, addToast, isAdviceOnly = false, triggerAdd = false, onTriggerAddReset = null, defaultView = 'list', onSaveSuccess = null, onNavigateToAdd = null }) {
   const [questions, setQuestions] = useState([]);
-  const [advices, setAdvices] = useState([]);
+  const [advices] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Bulk Import state
@@ -852,60 +852,7 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
       {!isAdviceOnly && user.role === 'admin' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
           
-          {/* 1. Proposed Advices Inbox (Admin view) */}
-          {false && advices.length > 0 && (
-            <div className="card animate-fade" style={{ borderLeft: '4px solid var(--color-secondary)', background: 'rgba(74, 125, 135, 0.05)', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <h3 style={{ fontSize: '1.05rem', margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <CheckCircle size={18} style={{ color: 'var(--color-secondary)' }} /> Pending Question Advices ({advices.filter(a=>a.status==='pending').length} items)
-              </h3>
-              
-              <div style={{ maxHeight: '250px', overflowY: 'auto', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', background: 'var(--color-card)' }}>
-                <table style={{ width: '100%', fontSize: '0.8rem' }}>
-                  <thead>
-                    <tr>
-                      <th>Suggested By</th>
-                      <th>Domain</th>
-                      <th>Diff/Pts</th>
-                      <th>Question Text</th>
-                      <th>Status</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {advices.map(advice => (
-                      <tr key={advice.id}>
-                        <td style={{ fontWeight: 600 }}>{advice.advisor_name || 'Standard User'}</td>
-                        <td>{advice.domain}</td>
-                        <td>{DIFFICULTY_LABELS[advice.difficulty] || advice.difficulty} ({advice.points}p)</td>
-                        <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {advice.question_text}
-                        </td>
-                        <td>
-                          <span className={`badge ${advice.status === 'approved' ? 'badge-success' : advice.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
-                            {advice.status}
-                          </span>
-                        </td>
-                        <td>
-                          {advice.status === 'pending' ? (
-                            <div style={{ display: 'flex', gap: '0.35rem' }}>
-                              <button onClick={() => handleApproveAdvice(advice.id)} className="btn btn-success btn-sm" style={{ padding: '0.2rem 0.4rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
-                                <Check size={12} /> Approve
-                              </button>
-                              <button onClick={() => handleRejectAdvice(advice.id)} className="btn btn-danger btn-sm" style={{ padding: '0.2rem 0.4rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
-                                <XCircle size={12} /> Reject
-                              </button>
-                            </div>
-                          ) : '--'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* 2. Search and Filter Bar */}
+          {/* Search and Filter Bar */}
           <div className="card" style={{ display: 'flex', gap: '0.75rem', padding: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: '220px', background: 'var(--color-input-bg)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '0.25rem 0.75rem' }}>
               <Search size={18} style={{ color: 'var(--text-muted)' }} />
@@ -955,7 +902,7 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
             </div>
           )}
 
-          {/* 3. Live Question Database */}
+          {/* Live Question Database */}
           <div className="table-container">
             <table style={{ width: '100%' }}>
               <thead>
