@@ -1,9 +1,10 @@
 {
   "name": "aptora",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "description": "Aptora - Testing & Grading App",
   "main": "server/server.js",
   "scripts": {
+    "sync:version": "node scripts/sync-version.js",
     "install:all": "npm install && npm install --prefix server && npm install --prefix client",
     "server": "node server/server.js",
     "client": "npm run dev --prefix client",

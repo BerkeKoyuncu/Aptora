@@ -14,7 +14,10 @@ const {
 const router = express.Router();
 const nodemailer = require('nodemailer');
 const ExcelJS = require('exceljs');
-const { publicUrl, isProduction, sessionLinkTtlHours, resultLinkTtlHours, sessionSubmitGraceSeconds } = require('./config');
+const {
+  publicUrl, isProduction, sessionLinkTtlHours,
+  resultLinkTtlHours, sessionSubmitGraceSeconds, auditRetentionDays, appVersion
+} = require('./config');
 
 // Helper to generate a 32-char hex session token
 const generateToken = () => crypto.randomBytes(16).toString('hex');
@@ -24,6 +27,17 @@ const isValidEmail = (value) => typeof value === 'string' && value.length <= 254
 const sha256 = (value) => crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 const redactToken = (value) => String(value || '').replace(/[a-f0-9]{32}/gi, ':token');
 const SESSION_LINK_PLACEHOLDER = '[PASTE_SESSION_LINK_HERE]';
+const SEB_QUIT_PATH = '/seb/quit';
+const formatTurkeyDateTimeUK = (value = new Date()) => new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/Istanbul',
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+}).format(value);
 const escapeHtml = (value) => String(value)
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -82,7 +96,7 @@ You have been invited to complete an E-Data assessment.
 ASSESSMENT DETAILS
 Number of questions: ${questionCount}
 Time limit: ${duration} minutes
-${sebRequired ? 'Safe Exam Browser (SEB): Required\n' : ''}
+${sebRequired ? 'Safe Exam Browser (SEB): Required - Direct/LAN access only\n' : ''}
 
 ACCESS INFORMATION
 Session link: ${SESSION_LINK_PLACEHOLDER}
@@ -91,16 +105,20 @@ Password: ${candidatePassword}
 
 INSTRUCTIONS
 1. At the agreed assessment time, open the session link.
-2. Sign in using the email address and password provided above.
-3. Enter your name on the welcome screen to begin the assessment.
+2. On the Access Portal page, click Join Now in the upper section under Privileged Web Access Console. Do not click the Download option.
+3. When the web access console opens, sign in using the email address and password provided above.
+4. Enter your name on the welcome screen to begin the assessment.
 ${sebRequired
-    ? `4. Safe Exam Browser is required. Download and open the SEB configuration when prompted, then continue the assessment inside SEB.
-5. Once the assessment starts, the ${duration}-minute timer cannot be paused. Do not close or refresh the assessment page.
-6. Submit your answers when finished. You will be able to review your detailed result immediately after submission.
-7. Your candidate account is temporary and will be removed automatically after submission.`
-    : `4. Once the assessment starts, the ${duration}-minute timer cannot be paused. Do not close or refresh the assessment page.
-5. Submit your answers when finished. You will be able to review your detailed result immediately after submission.
-6. Your candidate account is temporary and will be removed automatically after submission.`}
+    ? `5. Safe Exam Browser is required. Download and open the SEB configuration when prompted, then continue the assessment inside SEB.
+6. Once the assessment starts, the ${duration}-minute timer cannot be paused. Do not close or refresh the assessment page.
+7. When you click Submit Assessment, a confirmation window will appear inside the assessment page. Select Submit Answers to finish or Continue Assessment to return to your questions.
+8. You will be able to review your detailed result immediately after submission.
+9. After reviewing your result, use the Exit Safe Exam Browser button to close the secure browser.
+10. Your candidate account is temporary and will be removed automatically after submission.`
+    : `5. Once the assessment starts, the ${duration}-minute timer cannot be paused. Do not close or refresh the assessment page.
+6. When you click Submit Assessment, a confirmation window will appear inside the assessment page. Select Submit Answers to finish or Continue Assessment to return to your questions.
+7. You will be able to review your detailed result immediately after submission.
+8. Your candidate account is temporary and will be removed automatically after submission.`}
 
 Please do not share these credentials or the session link with anyone.
 
@@ -108,11 +126,20 @@ Best regards,
 E-Data Assessment Team`;
 };
 
+const getSebBaseUrl = (req) => {
+  try {
+    return new URL(`${req.protocol}://${req.get('host')}`).origin;
+  } catch {
+    // Fall back to the validated configured public URL below.
+    return publicUrl;
+  }
+};
+
 const verifySebRequest = (req, session) => {
   if (!session.require_seb) return true;
   const received = String(req.get('x-safeexambrowser-configkeyhash') || '').toLowerCase();
   if (!session.seb_config_key || !/^[a-f0-9]{64}$/.test(received)) return false;
-  const absoluteUrl = `${publicUrl}${req.originalUrl.split('#')[0]}`;
+  const absoluteUrl = new URL(req.originalUrl.split('#')[0], `${getSebBaseUrl(req)}/`).toString();
   const expected = sha256(`${absoluteUrl}${session.seb_config_key}`);
   return crypto.timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expected, 'hex'));
 };
@@ -121,6 +148,22 @@ const enforceSeb = (req, res, session) => {
   if (verifySebRequest(req, session)) return true;
   res.status(403).json({ error: 'This test must be opened with its approved Safe Exam Browser configuration' });
   return false;
+};
+
+const sanitizeResponses = (responses, questions) => {
+  if (!responses || typeof responses !== 'object' || Array.isArray(responses) || Object.keys(responses).length > 500) {
+    return null;
+  }
+  const allowed = new Map(questions.map(question => [String(question.id), new Set(
+    question.options.map(option => String(option.id))
+  )]));
+  const sanitized = {};
+  for (const [questionId, optionId] of Object.entries(responses)) {
+    const allowedOptions = allowed.get(String(questionId));
+    if (!allowedOptions || !allowedOptions.has(String(optionId))) return null;
+    sanitized[String(questionId)] = optionId;
+  }
+  return sanitized;
 };
 
 async function audit(req, action, targetType = null, targetId = null, details = null) {
@@ -164,6 +207,9 @@ async function sendRealEmail(adminUserId, to, subject, text, html) {
       host: config.smtp_host,
       port: config.smtp_port,
       secure: config.smtp_secure === 1,
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 30000,
       auth: {
         user: config.smtp_user,
         pass: decrypt(config.smtp_pass)
@@ -217,7 +263,7 @@ router.post('/auth/login', async (req, res) => {
     const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
     if (!user) {
       const candidate = await db.get(
-        `SELECT ca.*, ts.status, ts.expires_at
+        `SELECT ca.*, ts.status, ts.expires_at, ts.candidate_session_key
          FROM candidate_accounts ca
          JOIN test_sessions ts ON ts.id = ca.session_id
          WHERE ca.email = ?`,
@@ -233,9 +279,20 @@ router.post('/auth/login', async (req, res) => {
         await db.run('DELETE FROM candidate_accounts WHERE id = ?', [candidate.id]);
         return res.status(403).json({ error: 'This candidate account is no longer active' });
       }
+      const previousSessionReplaced = !!candidate.candidate_session_key;
+      candidate.candidate_session_key = generateToken();
+      await db.run(
+        `UPDATE test_sessions
+         SET candidate_session_key = ?, first_login_at = COALESCE(first_login_at, CURRENT_TIMESTAMP)
+         WHERE id = ?`,
+        [candidate.candidate_session_key, candidate.session_id]
+      );
       clearSessionCookie(res);
       setCandidateSessionCookie(res, candidate);
-      await audit(req, 'candidate.login_succeeded', 'test_session', candidate.session_id, { candidateEmail: candidate.email });
+      await audit(req, 'candidate.login_succeeded', 'test_session', candidate.session_id, {
+        candidateEmail: candidate.email,
+        previousSessionReplaced
+      });
       return res.json({ candidate: { email: candidate.email, role: 'candidate' } });
     }
     if (!bcrypt.compareSync(password, user.password_hash)) {
@@ -406,8 +463,100 @@ router.get('/auth/candidate-me', authenticateCandidate, async (req, res) => {
 });
 
 router.post('/auth/candidate-logout', authenticateCandidate, async (req, res) => {
+  if (!req.candidate.completed_recovery) {
+    await db.run(
+      `UPDATE test_sessions SET candidate_session_key = ?
+       WHERE id = ? AND candidate_session_key = ?`,
+      [generateToken(), req.candidate.session_id, req.candidate.candidate_session_key]
+    );
+  }
   clearCandidateSessionCookie(res);
   res.json({ success: true });
+});
+
+// Administrative audit trail and runtime information.
+router.get('/admin/audit-logs', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const page = Math.max(1, Number.parseInt(req.query?.page, 10) || 1);
+  const pageSize = Math.min(100, Math.max(10, Number.parseInt(req.query?.page_size, 10) || 25));
+  const search = cleanString(req.query?.search, 100);
+  const action = cleanString(req.query?.action, 100);
+  const where = [];
+  const params = [];
+
+  if (action) {
+    where.push('sal.action = ?');
+    params.push(action);
+  }
+  if (search) {
+    const pattern = `%${search}%`;
+    where.push(`(
+      sal.action LIKE ? OR sal.target_type LIKE ? OR sal.target_id LIKE ? OR
+      sal.ip_address LIKE ? OR u.username LIKE ? OR u.email LIKE ? OR sal.details LIKE ?
+    )`);
+    params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  try {
+    const countRow = await db.get(
+      `SELECT COUNT(*) AS total
+       FROM security_audit_logs sal
+       LEFT JOIN users u ON u.id = sal.actor_user_id
+       ${whereSql}`,
+      params
+    );
+    const rows = await db.query(
+      `SELECT sal.id, sal.action, sal.target_type, sal.target_id, sal.ip_address,
+              sal.user_agent, sal.details, sal.created_at,
+              u.username AS actor_name, u.email AS actor_email
+       FROM security_audit_logs sal
+       LEFT JOIN users u ON u.id = sal.actor_user_id
+       ${whereSql}
+       ORDER BY sal.created_at DESC, sal.id DESC
+       LIMIT ? OFFSET ?`,
+      [...params, pageSize, (page - 1) * pageSize]
+    );
+    const actions = await db.query(
+      'SELECT DISTINCT action FROM security_audit_logs ORDER BY action ASC'
+    );
+
+    res.json({
+      logs: rows.map(row => {
+        let details = null;
+        if (row.details) {
+          try { details = JSON.parse(row.details); } catch { details = row.details; }
+        }
+        return { ...row, details };
+      }),
+      actions: actions.map(item => item.action),
+      pagination: {
+        page,
+        page_size: pageSize,
+        total: Number(countRow?.total || 0),
+        total_pages: Math.max(1, Math.ceil(Number(countRow?.total || 0) / pageSize))
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+router.get('/admin/system-info', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const database = await db.get('SELECT sqlite_version() AS version');
+    res.json({
+      application: 'Aptora',
+      version: appVersion,
+      environment: isProduction ? 'Production' : 'Development',
+      node_version: process.version,
+      database: `SQLite ${database?.version || 'Unknown'}`,
+      server_time: new Date().toISOString(),
+      time_zone: 'Europe/Istanbul',
+      audit_retention_days: auditRetentionDays
+    });
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
 });
 
 // Update user profile (username, email, optional password)
@@ -846,9 +995,13 @@ router.get('/tests', authenticateToken, async (req, res) => {
 // Create Test (randomized or direct selection)
 router.post('/tests', authenticateToken, async (req, res) => {
   const { title, num_questions = 10, difficulty_distribution, domains, is_random = true, selected_questions = [], duration, require_seb } = req.body;
+  const passThreshold = Number.parseInt(req.body?.pass_threshold ?? '70', 10);
 
   if (!title) {
     return res.status(400).json({ error: 'Test title is required' });
+  }
+  if (!Number.isInteger(passThreshold) || passThreshold < 0 || passThreshold > 100) {
+    return res.status(400).json({ error: 'Pass threshold must be between 0 and 100' });
   }
 
   // Set default domains (all domains by default)
@@ -876,8 +1029,8 @@ router.post('/tests', authenticateToken, async (req, res) => {
     const testRequireSeb = require_seb === true || require_seb === 1 || require_seb === 'true' ? 1 : 0;
     // 1. Insert test meta
     const result = await db.run(
-      'INSERT INTO tests (title, created_by, num_questions, difficulty_distribution, domains, is_random, duration, require_seb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [title, req.user.id, num_questions, JSON.stringify(targetDist), JSON.stringify(targetDomains), is_random ? 1 : 0, testDuration, testRequireSeb]
+      'INSERT INTO tests (title, created_by, num_questions, difficulty_distribution, domains, is_random, duration, require_seb, pass_threshold) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [title, req.user.id, num_questions, JSON.stringify(targetDist), JSON.stringify(targetDomains), is_random ? 1 : 0, testDuration, testRequireSeb, passThreshold]
     );
     const testId = result.id;
 
@@ -1272,7 +1425,7 @@ router.post('/admin/email-settings/test', authenticateToken, async (req, res) =>
       from: `"${config.from_email.split('@')[0].toUpperCase()}" <${config.from_email}>`,
       to: test_email,
       subject: `Aptora: SMTP Diagnostic Test Email`,
-      text: `Congratulations! If you receive this message, it means your SMTP email setup in the Aptora testing platform is working correctly.\n\nSent at: ${new Date().toLocaleString()}`,
+      text: `Congratulations! If you receive this message, it means your SMTP email setup in the Aptora testing platform is working correctly.\n\nSent at: ${formatTurkeyDateTimeUK()}`,
       html: `
         <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 600px; border: 1px solid #becdd6; border-radius: 8px;">
           <h2 style="color: #2E7D32; margin-bottom: 1.5rem;">SMTP Diagnostic Check Passed</h2>
@@ -1280,7 +1433,7 @@ router.post('/admin/email-settings/test', authenticateToken, async (req, res) =>
           <p>Congratulations! Your SMTP settings are correctly validated, and this message indicates that outgoing mail delivery is operational.</p>
           <br/>
           <hr style="border: none; border-top: 1px solid #becdd6;"/>
-          <p style="font-size: 0.75rem; color: #738d91; margin-top: 1rem;">Timestamp: ${new Date().toLocaleString()}</p>
+          <p style="font-size: 0.75rem; color: #738d91; margin-top: 1rem;">Timestamp: ${formatTurkeyDateTimeUK()}</p>
         </div>
       `
     });
@@ -1301,6 +1454,8 @@ const candidateRouteMap = new Map([
   ['GET /candidate/session', ''],
   ['POST /candidate/start', '/start'],
   ['GET /candidate/take', '/take'],
+  ['GET /candidate/result', '/result'],
+  ['PUT /candidate/responses', '/responses'],
   ['POST /candidate/submit', '/submit'],
   ['POST /candidate/focus-lost', '/log-focus-lost'],
   ['GET /candidate/seb-config', '/seb-config']
@@ -1490,6 +1645,8 @@ router.post('/sessions/:id/start', requireCandidateAccount, async (req, res) => 
       candidate_email: session.candidate_email,
       status: 'active',
       questions: sanitizedQuestions,
+      responses: {},
+      responses_version: 0,
       duration: testObj?.duration || 20,
       deadline: new Date(Date.now() + (testObj?.duration || 20) * 60000).toISOString(),
       require_seb: !!testObj?.require_seb
@@ -1533,11 +1690,13 @@ router.get('/sessions/:id/seb-config', requireCandidateAccount, async (req, res)
       return res.status(410).send('This Safe Exam Browser configuration is no longer available');
     }
     
-    const startUrl = `${publicUrl}/`;
-    const quitUrl = `${publicUrl}/`;
+    const sebBaseUrl = getSebBaseUrl(req);
+    const startUrl = `${sebBaseUrl}/`;
+    const quitUrl = `${sebBaseUrl}${SEB_QUIT_PATH}`;
     const sebSettings = {
       allowPreferencesWindow: false,
       allowQuit: false,
+      allowScreenSharing: true,
       browserWindowAllowNewWindows: false,
       browserWindowAllowReload: false,
       browserWindowWebView: 2,
@@ -1549,11 +1708,16 @@ router.get('/sessions/:id/seb-config', requireCandidateAccount, async (req, res)
       enablePrintScreen: false,
       enableRightMouse: false,
       quitURL: quitUrl,
+      sebConfigPurpose: 0,
       sendBrowserExamKey: true,
       showTaskBar: false,
       startURL: startUrl
     };
-    const sortedSettings = Object.fromEntries(Object.entries(sebSettings).sort(([a], [b]) => a.localeCompare(b)));
+    const sortedSettings = Object.fromEntries(Object.entries(sebSettings).sort(([a], [b]) => {
+      if (a < b) return -1;
+      if (a > b) return 1;
+      return 0;
+    }));
     const configKey = sha256(JSON.stringify(sortedSettings));
     await db.run('UPDATE test_sessions SET seb_config_key = ? WHERE id = ? AND status = ?', [configKey, session.id, 'pending']);
 
@@ -1621,8 +1785,54 @@ router.get('/sessions/:id/take', requireCandidateAccount, async (req, res) => {
       candidate_email: session.candidate_email,
       status: 'active',
       questions: sanitizedQuestions,
+      responses: JSON.parse(session.responses || '{}'),
+      responses_version: Number(session.responses_version || 0),
+      responses_updated_at: session.responses_updated_at,
       duration: session.duration,
       deadline: `${session.deadline.replace(' ', 'T')}Z`
+    });
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// Persist an in-progress answer draft so a refresh or temporary connection loss
+// does not discard the candidate's work.
+router.put('/sessions/:id/responses', requireCandidateAccount, async (req, res) => {
+  try {
+    const session = await db.get(`
+      SELECT ts.*, t.duration, t.require_seb,
+             CASE WHEN CURRENT_TIMESTAMP >= datetime(ts.started_at, '+' || t.duration || ' minutes') THEN 1 ELSE 0 END AS expired
+      FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
+    `, [req.params.id]);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.status !== 'active') return res.status(409).json({ error: 'Session is not active' });
+    if (session.expired) return res.status(410).json({ error: 'The server-enforced test duration has elapsed' });
+    if (!enforceSeb(req, res, session)) return;
+
+    const questions = JSON.parse(session.questions_snapshot || '[]');
+    const sanitized = sanitizeResponses(req.body?.responses, questions);
+    if (!sanitized) return res.status(400).json({ error: 'Responses contain an invalid question or option' });
+    const responseVersion = Number.parseInt(req.body?.version, 10);
+    if (!Number.isInteger(responseVersion) || responseVersion < 1 || responseVersion > 1000000) {
+      return res.status(400).json({ error: 'A valid response draft version is required' });
+    }
+
+    const update = await db.run(
+      `UPDATE test_sessions
+       SET responses = ?, responses_version = ?, responses_updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status = 'active' AND COALESCE(responses_version, 0) < ?`,
+      [JSON.stringify(sanitized), responseVersion, req.params.id, responseVersion]
+    );
+    const saved = await db.get(
+      'SELECT status, responses_version, responses_updated_at FROM test_sessions WHERE id = ?',
+      [req.params.id]
+    );
+    if (!saved || saved.status !== 'active') return res.status(409).json({ error: 'Session is no longer active' });
+    res.json({
+      saved: update.changes === 1,
+      responses_version: Number(saved.responses_version || 0),
+      responses_updated_at: saved.responses_updated_at
     });
   } catch (err) {
     res.status(500).json({ error: safeError(err) });
@@ -1647,12 +1857,24 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
       return res.status(404).json({ error: 'Session not found' });
     }
 
+    if (session.status === 'completed') {
+      const completedResult = await loadSessionResult(req.params.id, true);
+      if (completedResult.errorStatus) {
+        return res.status(completedResult.errorStatus).json({ error: completedResult.error });
+      }
+      delete completedResult.result_expires_at;
+      return res.json(completedResult);
+    }
     if (session.status !== 'active') {
       return res.status(409).json({ error: 'Session is not in active state' });
     }
     if (!enforceSeb(req, res, session)) return;
 
     const questions = JSON.parse(session.questions_snapshot);
+    const sanitizedResponses = sanitizeResponses(responses, questions);
+    if (!sanitizedResponses) {
+      return res.status(400).json({ error: 'Responses contain an invalid question or option' });
+    }
     if (session.expired) {
       const total = questions.reduce((sum, question) => sum + Number(question.points || 0), 0);
       await db.run(
@@ -1680,7 +1902,7 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
       }
       domainBreakdown[q.domain].possible += q.points;
 
-      const selectedOptId = responses[q.id];
+      const selectedOptId = sanitizedResponses[q.id];
       const correctOption = q.options.find(opt => opt.isCorrect);
       const isCorrect = correctOption && String(selectedOptId) === String(correctOption.id);
 
@@ -1700,13 +1922,14 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
            responses = ?, result_expires_at = datetime('now', ?)
        WHERE id = ? AND status = 'active'
          AND CURRENT_TIMESTAMP <= datetime(started_at, '+' || ? || ' minutes', ?)`,
-      [scoredPoints, totalPointsPossible, JSON.stringify(responses), `+${resultLinkTtlHours} hours`,
+      [scoredPoints, totalPointsPossible, JSON.stringify(sanitizedResponses), `+${resultLinkTtlHours} hours`,
         req.params.id, session.duration, `+${sessionSubmitGraceSeconds} seconds`]
     );
     if (update.changes !== 1) return res.status(409).json({ error: 'Session was already submitted or expired' });
     const result = await loadSessionResult(req.params.id, true);
     await db.run('DELETE FROM candidate_accounts WHERE session_id = ?', [req.params.id]);
-    clearCandidateSessionCookie(res);
+    // Keep the already-issued signed browser session only for short-lived result
+    // recovery. The deleted account cannot be used to sign in again.
     delete result.result_expires_at;
     res.json(result);
   } catch (err) {
@@ -1714,10 +1937,14 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
   }
 });
 
-async function loadSessionResult(sessionId, includeFeedback) {
+async function loadSessionResult(sessionId, includeFeedback, includeInternalReview = false) {
   const session = await db.get(`
-    SELECT ts.*, t.require_seb, t.title AS test_title
-    FROM test_sessions ts JOIN tests t ON ts.test_id = t.id WHERE ts.id = ?
+    SELECT ts.*, t.require_seb, t.title AS test_title, t.pass_threshold,
+           reviewer.username AS decided_by_name
+    FROM test_sessions ts
+    JOIN tests t ON ts.test_id = t.id
+    LEFT JOIN users reviewer ON reviewer.id = ts.decided_by
+    WHERE ts.id = ?
   `, [sessionId]);
   if (!session) return { errorStatus: 404, error: 'Test session not found' };
   if (session.status !== 'completed') return { errorStatus: 400, error: 'Test session results are not available' };
@@ -1745,6 +1972,9 @@ async function loadSessionResult(sessionId, includeFeedback) {
     ...stats,
     successRate: stats.possible > 0 ? Number(((stats.scored / stats.possible) * 100).toFixed(1)) : 0
   }]));
+  const percentage = session.total_points > 0
+    ? Number(((session.score / session.total_points) * 100).toFixed(1))
+    : 0;
   return {
     id: session.id,
     candidate_name: session.candidate_name,
@@ -1753,7 +1983,15 @@ async function loadSessionResult(sessionId, includeFeedback) {
     completed_at: session.completed_at,
     score: session.score,
     total_points: session.total_points,
-    percentage: session.total_points > 0 ? Number(((session.score / session.total_points) * 100).toFixed(1)) : 0,
+    percentage,
+    pass_threshold: Number(session.pass_threshold ?? 70),
+    automatic_outcome: percentage >= Number(session.pass_threshold ?? 70) ? 'passed' : 'failed',
+    ...(includeInternalReview ? {
+      decision_status: session.decision_status || 'manual_review',
+      decision_note: session.decision_note || '',
+      decided_by_name: session.decided_by_name || null,
+      decided_at: session.decided_at
+    } : {}),
     domainSuccessRates,
     ...(includeFeedback ? { feedback, test_title: session.test_title } : {}),
     require_seb: !!session.require_seb,
@@ -1762,12 +2000,23 @@ async function loadSessionResult(sessionId, includeFeedback) {
   };
 }
 
+router.get('/sessions/:id/result', requireCandidateAccount, async (req, res) => {
+  try {
+    const result = await loadSessionResult(req.params.id, true);
+    if (result.errorStatus) return res.status(result.errorStatus).json({ error: result.error });
+    delete result.result_expires_at;
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
 // Detailed question-level report is available only to authenticated administrators.
 router.get('/admin/session-results', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const sessionId = String(req.get('x-aptora-session-token') || '').toLowerCase();
     if (!/^[a-f0-9]{32}$/.test(sessionId)) return res.status(400).json({ error: 'A valid session token is required' });
-    const result = await loadSessionResult(sessionId, true);
+    const result = await loadSessionResult(sessionId, true, true);
     if (result.errorStatus) return res.status(result.errorStatus).json({ error: result.error });
     delete result.result_expires_at;
     res.json(result);
@@ -1781,22 +2030,114 @@ router.get('/sessions', authenticateToken, async (req, res) => {
   try {
     const sessions = await db.query(`
       SELECT ts.id, ts.candidate_email, ts.candidate_name, ts.started_at, ts.completed_at,
-             ts.score, ts.total_points, ts.status, ts.focus_lost_count,
-             t.title as test_title, t.require_seb, u.username as creator_name,
-             ca.id AS candidate_account_id
+             ts.score, ts.total_points, ts.status, ts.focus_lost_count, ts.created_at,
+             ts.first_login_at, ts.expires_at, ts.revoked_at, ts.responses_updated_at,
+             ts.decision_status, ts.decision_note, ts.decided_at,
+             t.title as test_title, t.require_seb, t.pass_threshold, u.username as creator_name,
+             reviewer.username AS decided_by_name,
+             ca.id AS candidate_account_id,
+             (SELECT MAX(COALESCE(se.delivered_at, se.last_attempt_at, se.sent_at))
+                FROM simulated_emails se
+               WHERE se.session_id = ts.id AND se.delivery_status = 'sent') AS last_email_sent_at,
+             (SELECT COUNT(*) FROM simulated_emails se WHERE se.session_id = ts.id) AS email_attempts
       FROM test_sessions ts
       JOIN tests t ON ts.test_id = t.id
       JOIN users u ON t.created_by = u.id
+      LEFT JOIN users reviewer ON reviewer.id = ts.decided_by
       LEFT JOIN candidate_accounts ca ON ca.session_id = ts.id
-      ORDER BY ts.completed_at DESC, ts.started_at DESC
+      ORDER BY ts.created_at DESC
     `);
     res.json(sessions.map(session => {
       const { candidate_account_id, ...publicSession } = session;
+      const pendingExpired = session.status === 'pending' && session.expires_at &&
+        new Date(`${session.expires_at}Z`) <= new Date();
       return {
         ...publicSession,
-        candidate_account_active: !!candidate_account_id
+        candidate_account_active: !!candidate_account_id,
+        display_status: session.revoked_at ? 'revoked' : pendingExpired ? 'expired' : session.status
       };
     }));
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+router.post('/admin/session/extend', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const sessionId = String(req.get('x-aptora-session-token') || '').toLowerCase();
+  const hours = Number.parseInt(req.body?.hours, 10);
+  if (!/^[a-f0-9]{32}$/.test(sessionId) || !Number.isInteger(hours) || hours < 1 || hours > 720) {
+    return res.status(400).json({ error: 'A valid pending session and an extension between 1 and 720 hours are required' });
+  }
+  try {
+    const update = await db.run(
+      `UPDATE test_sessions
+       SET expires_at = datetime(
+         CASE WHEN expires_at IS NOT NULL AND datetime(expires_at) > CURRENT_TIMESTAMP
+              THEN expires_at ELSE CURRENT_TIMESTAMP END,
+         ?
+       )
+       WHERE id = ? AND status = 'pending' AND revoked_at IS NULL
+         AND EXISTS (SELECT 1 FROM candidate_accounts WHERE session_id = test_sessions.id)`,
+      [`+${hours} hours`, sessionId]
+    );
+    if (update.changes !== 1) {
+      return res.status(409).json({ error: 'Only an active pending candidate session can be extended' });
+    }
+    const session = await db.get('SELECT expires_at FROM test_sessions WHERE id = ?', [sessionId]);
+    await audit(req, 'candidate.session_extended', 'test_session', sessionId, { hours, expiresAt: session.expires_at });
+    res.json({ message: `Candidate access extended by ${hours} hours.`, expires_at: session.expires_at });
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+router.post('/admin/session/revoke', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const sessionId = String(req.get('x-aptora-session-token') || '').toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(sessionId)) return res.status(400).json({ error: 'A valid session is required' });
+  try {
+    const session = await db.get(
+      `SELECT ts.status, ca.id AS candidate_account_id
+       FROM test_sessions ts LEFT JOIN candidate_accounts ca ON ca.session_id = ts.id
+       WHERE ts.id = ?`,
+      [sessionId]
+    );
+    if (!session) return res.status(404).json({ error: 'Test session not found' });
+    if (!session.candidate_account_id || !['pending', 'active'].includes(session.status)) {
+      return res.status(409).json({ error: 'This candidate access is already inactive' });
+    }
+    await db.run('UPDATE test_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?', [sessionId]);
+    await db.run('DELETE FROM candidate_accounts WHERE session_id = ?', [sessionId]);
+    await audit(req, 'candidate.access_revoked', 'test_session', sessionId, { previousStatus: session.status });
+    res.json({ message: 'Candidate access revoked. The execution record has been preserved.' });
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+router.put('/admin/session-decision', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const sessionId = String(req.get('x-aptora-session-token') || '').toLowerCase();
+  const decisionStatus = cleanString(req.body?.decision_status, 30).toLowerCase();
+  const decisionNote = cleanString(req.body?.decision_note, 4000);
+  const allowedDecisions = new Set(['manual_review', 'proceed', 'reject', 'hold']);
+  if (!/^[a-f0-9]{32}$/.test(sessionId) || !allowedDecisions.has(decisionStatus)) {
+    return res.status(400).json({ error: 'A valid completed session and decision are required' });
+  }
+  try {
+    const update = await db.run(
+      `UPDATE test_sessions
+       SET decision_status = ?, decision_note = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status = 'completed'`,
+      [decisionStatus, decisionNote, req.user.id, sessionId]
+    );
+    if (update.changes !== 1) return res.status(409).json({ error: 'Only completed assessments can be reviewed' });
+    await audit(req, 'assessment.decision_updated', 'test_session', sessionId, { decisionStatus });
+    res.json({
+      message: 'Assessment decision saved.',
+      decision_status: decisionStatus,
+      decision_note: decisionNote,
+      decided_by_name: req.user.username,
+      decided_at: new Date().toISOString()
+    });
   } catch (err) {
     res.status(500).json({ error: safeError(err) });
   }
@@ -1862,7 +2203,11 @@ router.put('/admin/candidate-credentials', authenticateToken, requireRole(['admi
        WHERE id = ?`,
       [candidateEmail, bcrypt.hashSync(candidatePassword, 12), encrypt(candidatePassword), account.id]
     );
-    await db.run('UPDATE test_sessions SET candidate_email = ? WHERE id = ?', [candidateEmail, sessionId]);
+    // Credential changes also invalidate any browser that was already signed in.
+    await db.run(
+      'UPDATE test_sessions SET candidate_email = ?, candidate_session_key = ? WHERE id = ?',
+      [candidateEmail, generateToken(), sessionId]
+    );
     await audit(req, 'candidate.credentials_updated', 'test_session', sessionId, {
       previousEmail: account.email,
       candidateEmail
@@ -1883,7 +2228,16 @@ router.post('/admin/candidate-email', authenticateToken, requireRole(['admin']),
   if (text.includes(SESSION_LINK_PLACEHOLDER)) {
     return res.status(400).json({ error: 'Replace the session-link placeholder before sending the email' });
   }
+  const sessionLinkMatch = text.match(/^Session link:\s*(\S+)/im);
+  const sessionLink = sessionLinkMatch?.[1] || '';
+  try {
+    const parsedSessionLink = new URL(sessionLink);
+    if (!['http:', 'https:'].includes(parsedSessionLink.protocol)) throw new Error('Unsupported protocol');
+  } catch {
+    return res.status(400).json({ error: 'A valid http/https session link is required in the email text' });
+  }
 
+  let emailRecordId = null;
   try {
     const account = await db.get(
       `SELECT ca.email, ca.session_id
@@ -1896,6 +2250,27 @@ router.post('/admin/candidate-email', authenticateToken, requireRole(['admin']),
       return res.status(404).json({ error: 'The temporary candidate account is no longer active' });
     }
 
+    const queued = await db.run(
+      `INSERT INTO simulated_emails
+       (to_email, subject, link, body_text, sender_user_id, session_id, delivery_status, attempt_count)
+       VALUES (?, ?, ?, ?, ?, ?, 'queued', 0)`,
+      [
+        account.email,
+        subject,
+        sessionLink,
+        text,
+        req.user.id,
+        account.session_id
+      ]
+    );
+    emailRecordId = queued.id;
+    await db.run(
+      `UPDATE simulated_emails
+       SET delivery_status = 'sending', attempt_count = attempt_count + 1,
+           last_attempt_at = CURRENT_TIMESTAMP, error_message = NULL
+       WHERE id = ?`,
+      [emailRecordId]
+    );
     const delivery = await sendRealEmail(
       req.user.id,
       account.email,
@@ -1903,28 +2278,36 @@ router.post('/admin/candidate-email', authenticateToken, requireRole(['admin']),
       text,
       buildCandidateEmailHtml(text)
     );
-    const sessionLinkMatch = text.match(/^Session link:\s*(\S+)/im);
     await db.run(
-      `INSERT INTO simulated_emails
-       (to_email, subject, link, body_text, sender_user_id, delivery_status, message_id)
-       VALUES (?, ?, ?, ?, ?, 'sent', ?)`,
-      [
-        account.email,
-        subject,
-        sessionLinkMatch?.[1] || '',
-        text,
-        req.user.id,
-        delivery.messageId || null
-      ]
+      `UPDATE simulated_emails
+       SET delivery_status = 'sent', message_id = ?, error_message = NULL,
+           delivered_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [delivery.messageId || null, emailRecordId]
     );
     await audit(req, 'candidate.email_sent', 'test_session', account.session_id, {
       candidateEmail: account.email,
-      messageId: delivery.messageId
+      messageId: delivery.messageId,
+      emailRecordId
     });
-    res.json({ message: `Candidate email sent successfully to ${account.email}.` });
+    res.json({ message: `Candidate email sent successfully to ${account.email}.`, email_id: emailRecordId });
   } catch (err) {
+    const deliveryError = cleanString(err.message || 'Unknown SMTP delivery error', 1000);
+    if (emailRecordId) {
+      try {
+        await db.run(
+          `UPDATE simulated_emails
+           SET delivery_status = 'failed', error_message = ?
+           WHERE id = ?`,
+          [deliveryError, emailRecordId]
+        );
+      } catch (updateError) {
+        console.error('Failed to persist SMTP delivery failure:', updateError);
+      }
+    }
     res.status(502).json({
-      error: isProduction ? 'Email delivery failed. Check your SMTP settings.' : err.message
+      error: `Email delivery failed: ${deliveryError}`,
+      email_id: emailRecordId
     });
   }
 });
@@ -1965,13 +2348,88 @@ router.get('/admin/candidate-email-template', authenticateToken, requireRole(['a
 // ==========================================
 router.get('/emails', authenticateToken, async (req, res) => {
   try {
+    await db.run(
+      `UPDATE simulated_emails
+       SET delivery_status = 'failed',
+           error_message = COALESCE(error_message, 'Delivery was interrupted before the SMTP server returned a result.')
+       WHERE sender_user_id = ? AND delivery_status IN ('queued', 'sending')
+         AND datetime(COALESCE(last_attempt_at, sent_at)) <= datetime('now', '-5 minutes')`,
+      [req.user.id]
+    );
     const emails = await db.query(
-      `SELECT * FROM simulated_emails
-       WHERE sender_user_id = ? OR sender_user_id IS NULL
-       ORDER BY sent_at DESC`,
+      `SELECT se.*,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM candidate_accounts ca
+                JOIN test_sessions ts ON ts.id = ca.session_id
+                WHERE ca.session_id = se.session_id AND ca.email = se.to_email
+                  AND ts.status IN ('pending', 'active') AND ts.revoked_at IS NULL
+              ) THEN 1 ELSE 0 END AS can_retry
+       FROM simulated_emails se
+       WHERE se.sender_user_id = ? OR se.sender_user_id IS NULL
+       ORDER BY se.sent_at DESC`,
       [req.user.id]
     );
     res.json(emails);
+  } catch (err) {
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+router.post('/emails/:id/retry', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const emailId = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(emailId) || emailId < 1) return res.status(400).json({ error: 'A valid email record is required' });
+  try {
+    const email = await db.get(
+      `SELECT se.*
+       FROM simulated_emails se
+       JOIN candidate_accounts ca ON ca.session_id = se.session_id AND ca.email = se.to_email
+       JOIN test_sessions ts ON ts.id = ca.session_id
+       WHERE se.id = ? AND se.sender_user_id = ?
+         AND se.delivery_status IN ('failed', 'queued')
+         AND ts.status IN ('pending', 'active') AND ts.revoked_at IS NULL`,
+      [emailId, req.user.id]
+    );
+    if (!email) {
+      return res.status(409).json({ error: 'This email cannot be retried because it is not failed or the candidate account is no longer active' });
+    }
+    const claimed = await db.run(
+      `UPDATE simulated_emails
+       SET delivery_status = 'sending', attempt_count = COALESCE(attempt_count, 0) + 1,
+           last_attempt_at = CURRENT_TIMESTAMP, error_message = NULL
+       WHERE id = ? AND sender_user_id = ? AND delivery_status IN ('failed', 'queued')`,
+      [emailId, req.user.id]
+    );
+    if (claimed.changes !== 1) return res.status(409).json({ error: 'This email is already being retried' });
+
+    try {
+      const delivery = await sendRealEmail(
+        req.user.id,
+        email.to_email,
+        email.subject,
+        email.body_text || '',
+        buildCandidateEmailHtml(email.body_text || '')
+      );
+      await db.run(
+        `UPDATE simulated_emails
+         SET delivery_status = 'sent', message_id = ?, error_message = NULL,
+             delivered_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [delivery.messageId || null, emailId]
+      );
+      await audit(req, 'candidate.email_retried', 'test_session', email.session_id, {
+        candidateEmail: email.to_email,
+        messageId: delivery.messageId,
+        emailRecordId: emailId
+      });
+      return res.json({ message: `Candidate email sent successfully to ${email.to_email}.` });
+    } catch (err) {
+      const deliveryError = cleanString(err.message || 'Unknown SMTP delivery error', 1000);
+      await db.run(
+        `UPDATE simulated_emails SET delivery_status = 'failed', error_message = ? WHERE id = ?`,
+        [deliveryError, emailId]
+      );
+      return res.status(502).json({ error: `Email delivery failed: ${deliveryError}` });
+    }
   } catch (err) {
     res.status(500).json({ error: safeError(err) });
   }
@@ -1984,7 +2442,7 @@ router.delete('/emails/:id', authenticateToken, requireRole(['admin']), async (r
       'DELETE FROM simulated_emails WHERE id = ? AND (sender_user_id = ? OR sender_user_id IS NULL)',
       [req.params.id, req.user.id]
     );
-    res.json({ message: 'Simulated email deleted successfully' });
+    res.json({ message: 'Email record deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: safeError(err) });
   }
@@ -2092,7 +2550,7 @@ router.post('/emails/bulk-delete', authenticateToken, requireRole(['admin']), as
        WHERE id IN (${placeholders}) AND (sender_user_id = ? OR sender_user_id IS NULL)`,
       [...ids, req.user.id]
     );
-    res.json({ message: 'Simulated emails deleted successfully' });
+    res.json({ message: 'Email records deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: safeError(err) });
   }

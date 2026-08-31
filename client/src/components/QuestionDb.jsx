@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import { Database, Plus, Edit, Trash2, CheckCircle, XCircle, Search, RefreshCw, Send, Check, Upload, Download, AlertCircle } from 'lucide-react';
+import { formatDateUK } from '../utils/dateFormat';
 
 const DIFFICULTY_LABELS = { 1: 'Beginner', 2: 'Elementary', 3: 'Intermediate', 4: 'Advanced', 5: 'Expert' };
 
@@ -1009,7 +1010,7 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
                     <td style={{ fontWeight: 700 }}>{q.points}p</td>
                     <td>{q.question_text}</td>
                     <td style={{ fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
-                      {q.created_at ? new Date(q.created_at).toLocaleDateString() : 'N/A'}
+                      {formatDateUK(q.created_at, 'N/A')}
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -1068,7 +1069,7 @@ export default function QuestionDb({ user, addToast, isAdviceOnly = false, trigg
                           {advice.status}
                         </span>
                       </td>
-                      <td>{new Date(advice.created_at).toLocaleDateString()}</td>
+                      <td>{formatDateUK(advice.created_at, 'N/A')}</td>
                     </tr>
                   ))}
                 </tbody>

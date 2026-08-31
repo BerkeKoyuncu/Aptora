@@ -11,6 +11,7 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
   const [difficultyPreset, setDifficultyPreset] = useState('medium');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [duration, setDuration] = useState(20);
+  const [passThreshold, setPassThreshold] = useState(70);
   const [useHybrid, setUseHybrid] = useState(false);
   const [selectSearch, setSelectSearch] = useState('');
   const [selectDomain, setSelectDomain] = useState('');
@@ -161,6 +162,7 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
         difficulty_distribution: dist,
         selected_questions: selectedQuestionIds,
         duration: parseInt(duration) || 20,
+        pass_threshold: parseInt(passThreshold),
         require_seb: requireSeb
       };
 
@@ -173,6 +175,7 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
       setSelectedQuestionIds([]);
       setIsRandom(true);
       setDuration(20);
+      setPassThreshold(70);
       setUseHybrid(false);
       setRequireSeb(false);
     } catch (err) {
@@ -317,7 +320,7 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
 
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
         {/* Title & Duration */}
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '1rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1.35fr', gap: '1rem' }}>
           <div>
             <label>Test Title / Assessment Name</label>
             <input 
@@ -339,6 +342,17 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
               required 
             />
           </div>
+          <div>
+            <label>Pass Threshold (%)</label>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={passThreshold}
+              onChange={e => setPassThreshold(e.target.value)}
+              required
+            />
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', marginTop: '1.2rem' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', margin: 0, cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
               <input 
@@ -347,9 +361,9 @@ export default function TestCreator({ user, addToast, onViewMailbox }) {
                 onChange={e => setRequireSeb(e.target.checked)} 
                 style={{ width: '18px', height: '18px', cursor: 'pointer' }}
               />
-              <span>Require SEB</span>
+              <span>Require SEB — Direct/LAN Access</span>
             </label>
-            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '1.4rem' }}>Safe Exam Browser</span>
+            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '1.4rem' }}>Not compatible with the remote web access console</span>
           </div>
         </div>
 

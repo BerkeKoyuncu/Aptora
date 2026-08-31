@@ -381,10 +381,12 @@ export default function AdminDashboard({ user, addToast, onInviteCandidate }) {
                     rows={18}
                     style={{ width: '100%', resize: 'vertical', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '0.82rem', lineHeight: 1.45 }}
                   />
-                  <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '0.4rem' }}>
-                    Replace {inviteResult.sessionLinkPlaceholder} with the session link before sending.
-                    The delivered HTML email includes the standard color E-Data logo.
-                  </small>
+                  <div style={{ color: inviteResult.emailTemplate.includes(inviteResult.sessionLinkPlaceholder) ? 'var(--color-warning)' : 'var(--color-success)', background: 'var(--color-panel)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '0.55rem 0.7rem', fontSize: '0.72rem', marginTop: '0.5rem', fontWeight: 600 }}>
+                    {inviteResult.emailTemplate.includes(inviteResult.sessionLinkPlaceholder)
+                      ? `Action required: replace ${inviteResult.sessionLinkPlaceholder} with the session link before sending.`
+                      : 'Session link placeholder has been replaced. The email is ready to send.'}
+                    {' '}The delivered HTML email includes the standard color E-Data logo.
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem', borderTop: '1px solid var(--color-border)', paddingTop: '1rem' }}>

@@ -91,6 +91,7 @@ const initDb = async () => {
       is_random INTEGER DEFAULT 1,
       duration INTEGER DEFAULT 20,
       require_seb INTEGER DEFAULT 0,
+      pass_threshold INTEGER DEFAULT 70 CHECK(pass_threshold BETWEEN 0 AND 100),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE
     )
@@ -106,6 +107,12 @@ const initDb = async () => {
   // Migration: Add require_seb column to tests table
   try {
     await run(`ALTER TABLE tests ADD COLUMN require_seb INTEGER DEFAULT 0`);
+  } catch (err) {
+    // Ignore if column exists
+  }
+
+  try {
+    await run(`ALTER TABLE tests ADD COLUMN pass_threshold INTEGER DEFAULT 70`);
   } catch (err) {
     // Ignore if column exists
   }
@@ -142,21 +149,40 @@ const initDb = async () => {
       total_points REAL,
       status TEXT CHECK(status IN ('pending', 'active', 'completed')) DEFAULT 'pending',
       responses TEXT, -- JSON object of responses
+      responses_version INTEGER DEFAULT 0,
+      responses_updated_at DATETIME,
       questions_snapshot TEXT, -- JSON copy of questions at creation
       focus_lost_count INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      first_login_at DATETIME,
       expires_at DATETIME,
       result_expires_at DATETIME,
       seb_config_key TEXT,
-      FOREIGN KEY(test_id) REFERENCES tests(id) ON DELETE CASCADE
+      revoked_at DATETIME,
+      candidate_session_key TEXT,
+      decision_status TEXT,
+      decision_note TEXT,
+      decided_by INTEGER,
+      decided_at DATETIME,
+      FOREIGN KEY(test_id) REFERENCES tests(id) ON DELETE CASCADE,
+      FOREIGN KEY(decided_by) REFERENCES users(id) ON DELETE SET NULL
     )
   `);
 
   for (const migration of [
     `ALTER TABLE test_sessions ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE test_sessions ADD COLUMN responses_version INTEGER DEFAULT 0`,
+    `ALTER TABLE test_sessions ADD COLUMN responses_updated_at DATETIME`,
+    `ALTER TABLE test_sessions ADD COLUMN first_login_at DATETIME`,
     `ALTER TABLE test_sessions ADD COLUMN expires_at DATETIME`,
     `ALTER TABLE test_sessions ADD COLUMN result_expires_at DATETIME`,
-    `ALTER TABLE test_sessions ADD COLUMN seb_config_key TEXT`
+    `ALTER TABLE test_sessions ADD COLUMN seb_config_key TEXT`,
+    `ALTER TABLE test_sessions ADD COLUMN revoked_at DATETIME`,
+    `ALTER TABLE test_sessions ADD COLUMN candidate_session_key TEXT`,
+    `ALTER TABLE test_sessions ADD COLUMN decision_status TEXT`,
+    `ALTER TABLE test_sessions ADD COLUMN decision_note TEXT`,
+    `ALTER TABLE test_sessions ADD COLUMN decided_by INTEGER`,
+    `ALTER TABLE test_sessions ADD COLUMN decided_at DATETIME`
   ]) {
     try { await run(migration); } catch { /* Column already exists */ }
   }
@@ -203,20 +229,34 @@ const initDb = async () => {
       link TEXT NOT NULL,
       body_text TEXT,
       sender_user_id INTEGER,
+      session_id TEXT,
       delivery_status TEXT DEFAULT 'sent',
       message_id TEXT,
+      error_message TEXT,
+      attempt_count INTEGER DEFAULT 0,
+      last_attempt_at DATETIME,
+      delivered_at DATETIME,
       sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(sender_user_id) REFERENCES users(id) ON DELETE SET NULL
+      FOREIGN KEY(sender_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY(session_id) REFERENCES test_sessions(id) ON DELETE SET NULL
     )
   `);
   for (const migration of [
     `ALTER TABLE simulated_emails ADD COLUMN body_text TEXT`,
     `ALTER TABLE simulated_emails ADD COLUMN sender_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`,
+    `ALTER TABLE simulated_emails ADD COLUMN session_id TEXT REFERENCES test_sessions(id) ON DELETE SET NULL`,
     `ALTER TABLE simulated_emails ADD COLUMN delivery_status TEXT DEFAULT 'sent'`,
-    `ALTER TABLE simulated_emails ADD COLUMN message_id TEXT`
+    `ALTER TABLE simulated_emails ADD COLUMN message_id TEXT`,
+    `ALTER TABLE simulated_emails ADD COLUMN error_message TEXT`,
+    `ALTER TABLE simulated_emails ADD COLUMN attempt_count INTEGER DEFAULT 0`,
+    `ALTER TABLE simulated_emails ADD COLUMN last_attempt_at DATETIME`,
+    `ALTER TABLE simulated_emails ADD COLUMN delivered_at DATETIME`
   ]) {
     try { await run(migration); } catch { /* Column already exists */ }
   }
+  await run(`UPDATE simulated_emails SET attempt_count = 1 WHERE attempt_count IS NULL OR attempt_count = 0`);
+  await run(`UPDATE simulated_emails SET delivered_at = sent_at WHERE delivery_status = 'sent' AND delivered_at IS NULL`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_emails_session ON simulated_emails(session_id)`);
 
   // Create EmailSettings table
   await run(`

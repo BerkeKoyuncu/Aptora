@@ -1,4 +1,13 @@
+const fs = require('fs');
+const path = require('path');
+
 const isProduction = process.env.NODE_ENV === 'production';
+const versionFile = path.join(__dirname, '..', 'version.txt');
+const appVersion = fs.readFileSync(versionFile, 'utf8').trim();
+
+if (!/^\d+\.\d+\.\d+$/.test(appVersion)) {
+  throw new Error('version.txt must contain a semantic version such as 1.3.0.');
+}
 
 const parseBoolean = (value, defaultValue = false) => {
   if (value === undefined) return defaultValue;
@@ -47,6 +56,7 @@ if (publicUrl) {
 }
 
 module.exports = {
+  appVersion,
   isProduction,
   publicUrl,
   allowedOrigins,

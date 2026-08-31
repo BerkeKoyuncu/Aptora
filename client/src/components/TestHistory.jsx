@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import { FileText, RefreshCw, Mail, CheckCircle, Trash2, Play, Copy, Send } from 'lucide-react';
+import { formatDateUK } from '../utils/dateFormat';
 
 export default function TestHistory({ user, addToast }) {
   const [tests, setTests] = useState([]);
@@ -199,6 +200,7 @@ export default function TestHistory({ user, addToast }) {
                 <th>Test Title</th>
                 <th>Domains</th>
                 <th>Questions Count</th>
+                <th>Pass Threshold</th>
                 <th>Generation Mode</th>
                 <th>Created By</th>
                 <th>Created At</th>
@@ -233,13 +235,14 @@ export default function TestHistory({ user, addToast }) {
                     </span>
                   </td>
                   <td style={{ fontWeight: 600 }}>{test.num_questions}</td>
+                  <td style={{ fontWeight: 600 }}>{test.pass_threshold ?? 70}%</td>
                   <td>
                     <span className={`badge ${test.is_random ? 'badge-primary' : 'badge-accent'}`}>
                       {test.is_random ? 'Randomized' : 'Manual'}
                     </span>
                   </td>
                   <td>{test.creator_name}</td>
-                  <td style={{ fontSize: '0.8rem' }}>{new Date(test.created_at).toLocaleDateString()}</td>
+                  <td style={{ fontSize: '0.8rem' }}>{formatDateUK(test.created_at)}</td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
                       <button 
@@ -275,7 +278,7 @@ export default function TestHistory({ user, addToast }) {
               ))}
               {tests.length === 0 && (
                 <tr>
-                  <td colSpan={user.role === 'admin' ? 8 : 7} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={user.role === 'admin' ? 9 : 8} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
                     No test configurations found. Generate one in the creation panel.
                   </td>
                 </tr>
@@ -312,7 +315,7 @@ export default function TestHistory({ user, addToast }) {
                   <label style={{ fontSize: '0.75rem' }}>Temporary Password</label>
                   <input
                     type="password"
-                    placeholder="Set a strong temporary password"
+                    placeholder="Set a temporary password"
                     value={candidatePassword}
                     onChange={e => setCandidatePassword(e.target.value)}
                     required
@@ -357,10 +360,12 @@ export default function TestHistory({ user, addToast }) {
                     rows={18}
                     style={{ width: '100%', resize: 'vertical', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '0.8rem', lineHeight: 1.45 }}
                   />
-                  <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '0.4rem' }}>
-                    Replace {inviteResult.sessionLinkPlaceholder} with the session link before sending.
-                    The delivered HTML email includes the standard color E-Data logo.
-                  </small>
+                  <div style={{ color: inviteResult.emailTemplate.includes(inviteResult.sessionLinkPlaceholder) ? 'var(--color-warning)' : 'var(--color-success)', background: 'var(--color-panel)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '0.55rem 0.7rem', fontSize: '0.7rem', marginTop: '0.5rem', fontWeight: 600 }}>
+                    {inviteResult.emailTemplate.includes(inviteResult.sessionLinkPlaceholder)
+                      ? `Action required: replace ${inviteResult.sessionLinkPlaceholder} with the session link before sending.`
+                      : 'Session link placeholder has been replaced. The email is ready to send.'}
+                    {' '}The delivered HTML email includes the standard color E-Data logo.
+                  </div>
                 </div>
 
                 <button onClick={copyEmailTemplate} className="btn btn-primary btn-sm" style={{ width: '100%', display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: '0.35rem' }}>

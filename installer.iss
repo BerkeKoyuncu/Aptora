@@ -1,5 +1,7 @@
 #define MyAppName "Aptora"
-#define MyAppVersion "1.1.4"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0"
+#endif
 #define MyAppPublisher "E-Data Teknoloji"
 #define MyAppExeName "run.bat"
 
@@ -47,6 +49,7 @@ Source: "setup.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "AptoraControlPanel.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "server-control.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "DEPLOYMENT.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "version.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Aptora Control Panel"; Filename: "{app}\AptoraControlPanel.bat"; IconFilename: "{app}\client\dist\aptora.ico"

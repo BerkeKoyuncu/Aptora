@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { History, Search, RefreshCw, ExternalLink, Trash2, KeyRound, Eye, EyeOff, X, Mail, Copy, Send } from 'lucide-react';
+import { History, Search, RefreshCw, ExternalLink, Trash2, KeyRound, Eye, EyeOff, X, Mail, Copy, Send, CalendarClock, Ban, Activity } from 'lucide-react';
+import { formatDateTimeUK } from '../utils/dateFormat';
+
+const formatServerDate = formatDateTimeUK;
 
 export default function TestExecutionHistory({ user, addToast }) {
   const [sessions, setSessions] = useState([]);
@@ -17,6 +20,10 @@ export default function TestExecutionHistory({ user, addToast }) {
   const [emailDraft, setEmailDraft] = useState(null);
   const [loadingEmailDraft, setLoadingEmailDraft] = useState(false);
   const [sendingCandidateEmail, setSendingCandidateEmail] = useState(false);
+  const [timelineSession, setTimelineSession] = useState(null);
+  const [extendSession, setExtendSession] = useState(null);
+  const [extensionHours, setExtensionHours] = useState(24);
+  const [sessionActionBusy, setSessionActionBusy] = useState(false);
 
   const fetchHistory = async () => {
     try {
@@ -135,10 +142,41 @@ export default function TestExecutionHistory({ user, addToast }) {
         emailDraft.emailTemplate
       );
       addToast(result.message);
+      await fetchHistory();
     } catch (err) {
       addToast(err.message, 'error');
     } finally {
       setSendingCandidateEmail(false);
+    }
+  };
+
+  const handleExtendSession = async (event) => {
+    event.preventDefault();
+    if (!extendSession) return;
+    try {
+      setSessionActionBusy(true);
+      const result = await api.extendCandidateSession(extendSession.id, Number(extensionHours));
+      addToast(result.message);
+      setExtendSession(null);
+      await fetchHistory();
+    } catch (err) {
+      addToast(err.message, 'error');
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
+  const handleRevokeSession = async (session) => {
+    if (!window.confirm(`Revoke access for ${session.candidate_email}? The execution history will be preserved, but the candidate will no longer be able to sign in.`)) return;
+    try {
+      setSessionActionBusy(true);
+      const result = await api.revokeCandidateSession(session.id);
+      addToast(result.message);
+      await fetchHistory();
+    } catch (err) {
+      addToast(err.message, 'error');
+    } finally {
+      setSessionActionBusy(false);
     }
   };
 
@@ -228,7 +266,7 @@ export default function TestExecutionHistory({ user, addToast }) {
               <th>Grade Rate</th>
               <th>Status</th>
               <th>Completion Date</th>
-              <th style={{ width: '120px' }}>Actions</th>
+              <th style={{ width: '220px' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -236,6 +274,8 @@ export default function TestExecutionHistory({ user, addToast }) {
               const gradePct = session.total_points > 0 
                 ? Math.round((session.score / session.total_points) * 100) 
                 : 0;
+              const displayStatus = session.display_status || session.status;
+              const passed = gradePct >= Number(session.pass_threshold ?? 70);
               return (
                 <tr key={session.id}>
                   <td style={{ textAlign: 'center' }}>
@@ -263,14 +303,16 @@ export default function TestExecutionHistory({ user, addToast }) {
                     </div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{session.candidate_email}</div>
                     {!session.candidate_account_active && (
-                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Temporary account removed</div>
+                      <div style={{ fontSize: '0.68rem', color: session.revoked_at ? 'var(--color-error)' : 'var(--text-muted)' }}>
+                        {session.revoked_at ? 'Access revoked' : 'Temporary account removed'}
+                      </div>
                     )}
                   </td>
                   <td>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
                       <span>{session.test_title}</span>
                       {session.require_seb === 1 || session.require_seb === true ? (
-                        <span style={{ fontSize: '0.65rem', color: 'var(--color-primary)', fontWeight: 600 }}>🛡️ SEB Enforced</span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--color-primary)', fontWeight: 600 }}>SEB · Direct/LAN Access</span>
                       ) : null}
                     </div>
                   </td>
@@ -278,19 +320,23 @@ export default function TestExecutionHistory({ user, addToast }) {
                   <td style={{ fontWeight: 600 }}>{session.status === 'completed' ? `${gradePct} / 100` : '--'}</td>
                   <td style={{ fontWeight: 700 }}>
                     {session.status === 'completed' ? (
-                      <span style={{ color: gradePct >= 75 ? 'var(--color-success)' : gradePct >= 50 ? 'var(--color-warning)' : 'var(--color-error)' }}>
-                        {gradePct}%
-                      </span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                        <span style={{ color: passed ? 'var(--color-success)' : 'var(--color-error)' }}>{gradePct}%</span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Threshold {session.pass_threshold ?? 70}%</span>
+                        {session.decision_status && (
+                          <span className="badge badge-accent" style={{ fontSize: '0.6rem', width: 'fit-content' }}>{session.decision_status.replace('_', ' ')}</span>
+                        )}
+                      </div>
                     ) : '--'}
                   </td>
                   <td>
-                    <span className={`badge ${session.status === 'completed' ? 'badge-success' : session.status === 'active' ? 'badge-warning' : 'badge-accent'}`}>
-                      {session.status}
+                    <span className={`badge ${displayStatus === 'completed' ? 'badge-success' : displayStatus === 'active' ? 'badge-warning' : ['revoked', 'expired'].includes(displayStatus) ? 'badge-danger' : 'badge-accent'}`}>
+                      {displayStatus}
                     </span>
                   </td>
-                  <td>{session.completed_at ? new Date(session.completed_at).toLocaleString() : '--'}</td>
+                  <td>{formatServerDate(session.completed_at)}</td>
                   <td>
-                    <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
                       {session.status === 'completed' && (
                         <a href={`#/admin-results/${session.id}`} className="btn btn-accent btn-sm" style={{ display: 'inline-flex', padding: '0.2rem 0.4rem', fontSize: '0.75rem', alignItems: 'center', gap: '0.25rem' }}>
                           <span>Scorecard</span>
@@ -317,6 +363,35 @@ export default function TestExecutionHistory({ user, addToast }) {
                           <Mail size={12} />
                         </button>
                       )}
+                      {session.status === 'pending' && session.candidate_account_active && (
+                        <button
+                          onClick={() => { setExtendSession(session); setExtensionHours(24); }}
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center' }}
+                          title="Extend candidate access"
+                        >
+                          <CalendarClock size={12} />
+                        </button>
+                      )}
+                      {session.candidate_account_active && (
+                        <button
+                          onClick={() => handleRevokeSession(session)}
+                          disabled={sessionActionBusy}
+                          className="btn btn-danger btn-sm"
+                          style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center' }}
+                          title="Revoke candidate access"
+                        >
+                          <Ban size={12} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setTimelineSession(session)}
+                        className="btn btn-accent btn-sm"
+                        style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center' }}
+                        title="View activity timeline"
+                      >
+                        <Activity size={12} />
+                      </button>
                       <button 
                         onClick={() => handleDeleteSession(session.id)} 
                         className="btn btn-danger btn-sm" 
@@ -340,6 +415,82 @@ export default function TestExecutionHistory({ user, addToast }) {
           </tbody>
         </table>
       </div>
+
+      {extendSession && (
+        <div className="modal-overlay">
+          <div className="modal-content animate-fade" style={{ maxWidth: '430px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.75rem', marginBottom: '1.25rem' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Extend Candidate Access</h3>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem' }}>{extendSession.candidate_email}</div>
+              </div>
+              <button type="button" onClick={() => setExtendSession(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleExtendSession} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="card" style={{ padding: '0.85rem', background: 'var(--color-panel)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                Current expiry: <strong>{formatServerDate(extendSession.expires_at)}</strong>
+              </div>
+              <div>
+                <label>Additional Hours</label>
+                <select value={extensionHours} onChange={event => setExtensionHours(Number(event.target.value))}>
+                  <option value={24}>24 hours</option>
+                  <option value={72}>3 days</option>
+                  <option value={168}>7 days</option>
+                  <option value={336}>14 days</option>
+                  <option value={720}>30 days</option>
+                </select>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button type="button" className="btn btn-accent btn-sm" onClick={() => setExtendSession(null)}>Cancel</button>
+                <button type="submit" className="btn btn-primary btn-sm" disabled={sessionActionBusy}>
+                  {sessionActionBusy ? 'Extending...' : 'Extend Access'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {timelineSession && (
+        <div className="modal-overlay">
+          <div className="modal-content animate-fade" style={{ maxWidth: '560px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.75rem', marginBottom: '1.25rem' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Candidate Activity Timeline</h3>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem' }}>{timelineSession.candidate_email}</div>
+              </div>
+              <button type="button" onClick={() => setTimelineSession(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <X size={20} />
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              {[
+                ['Candidate account created', timelineSession.created_at],
+                [`Invitation email sent${timelineSession.email_attempts ? ` (${timelineSession.email_attempts} email record${timelineSession.email_attempts === 1 ? '' : 's'})` : ''}`, timelineSession.last_email_sent_at],
+                ['Candidate first signed in', timelineSession.first_login_at],
+                ['Assessment started', timelineSession.started_at],
+                ['Answers last autosaved', timelineSession.responses_updated_at],
+                ['Candidate access revoked', timelineSession.revoked_at],
+                ['Assessment completed', timelineSession.completed_at],
+                ['Administrator decision updated', timelineSession.decided_at]
+              ].filter(([, date]) => date).map(([label, date]) => (
+                <div key={label} style={{ display: 'grid', gridTemplateColumns: '14px 1fr auto', gap: '0.75rem', alignItems: 'center' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--color-primary)', boxShadow: '0 0 0 3px rgba(74, 125, 135, 0.14)' }} />
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.85rem' }}>{label}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textAlign: 'right' }}>{formatServerDate(date)}</span>
+                </div>
+              ))}
+              {timelineSession.status === 'pending' && timelineSession.candidate_account_active && (
+                <div className="card" style={{ padding: '0.8rem', marginTop: '0.4rem', background: 'var(--color-panel)', fontSize: '0.8rem' }}>
+                  Candidate access expires: <strong>{formatServerDate(timelineSession.expires_at)}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {credentialSession && (
         <div className="modal-overlay">
@@ -448,9 +599,11 @@ export default function TestExecutionHistory({ user, addToast }) {
                     rows={20}
                     style={{ width: '100%', resize: 'vertical', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '0.82rem', lineHeight: 1.45 }}
                   />
-                  <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '0.4rem' }}>
-                    Replace {emailDraft.sessionLinkPlaceholder} with the session link before sending.
-                  </small>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: emailDraft.emailTemplate.includes(emailDraft.sessionLinkPlaceholder) ? 'var(--color-warning)' : 'var(--color-success)', background: 'var(--color-panel)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '0.55rem 0.7rem', fontSize: '0.72rem', marginTop: '0.5rem', fontWeight: 600 }}>
+                    {emailDraft.emailTemplate.includes(emailDraft.sessionLinkPlaceholder)
+                      ? `Action required: replace ${emailDraft.sessionLinkPlaceholder} with the session link before sending.`
+                      : 'Session link placeholder has been replaced. The email is ready to send.'}
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: '0.75rem', borderTop: '1px solid var(--color-border)', paddingTop: '1rem' }}>

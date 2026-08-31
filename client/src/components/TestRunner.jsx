@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../api';
-import { Shield, Clock, ArrowLeft, ArrowRight, CheckCircle, RefreshCw, UserCheck, AlertTriangle, Sun, Moon, Download } from 'lucide-react';
+import { Shield, Clock, ArrowLeft, ArrowRight, CheckCircle, RefreshCw, UserCheck, AlertTriangle, Sun, Moon, Download, LogOut } from 'lucide-react';
 import EDataBranding from './EDataBranding';
 import TestResultsView from './TestResultsView';
+import { formatTimeUK } from '../utils/dateFormat';
 
-export default function TestRunner({ addToast, darkMode, setDarkMode }) {
+export default function TestRunner({ addToast, darkMode, setDarkMode, onSessionInvalidated }) {
   const [sessionInfo, setSessionInfo] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -18,7 +19,28 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
   const [timeLeft, setTimeLeft] = useState(1200); // Default placeholder
   const [isExamActive, setIsExamActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showSubmitConfirmation, setShowSubmitConfirmation] = useState(false);
   const [completedResults, setCompletedResults] = useState(null);
+  const [saveStatus, setSaveStatus] = useState('saved');
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const autosaveTimerRef = useRef(null);
+  const autosaveVersionRef = useRef(0);
+  const autosaveEnabledRef = useRef(false);
+  const responsesRef = useRef({});
+  const queueAutosaveRef = useRef(null);
+  const addToastRef = useRef(addToast);
+  const sessionInvalidatedRef = useRef(onSessionInvalidated);
+  addToastRef.current = addToast;
+  sessionInvalidatedRef.current = onSessionInvalidated;
+
+  const handleCandidateSessionError = useCallback((err) => {
+    if (err?.code !== 'CANDIDATE_SESSION_REPLACED') return false;
+    autosaveEnabledRef.current = false;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    addToastRef.current('This assessment was signed in on another browser. Sign in here again to continue on this browser.', 'warning');
+    sessionInvalidatedRef.current?.();
+    return true;
+  }, []);
 
   // Load session meta details
   useEffect(() => {
@@ -33,22 +55,32 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
           const takeData = await api.getSessionTake();
           setQuestions(takeData.questions);
           setCandidateName(takeData.candidate_name);
+          const recoveredResponses = takeData.responses || {};
+          setResponses(recoveredResponses);
+          responsesRef.current = recoveredResponses;
+          autosaveVersionRef.current = Number(takeData.responses_version || 0);
+          setLastSavedAt(takeData.responses_updated_at ? new Date(`${takeData.responses_updated_at}Z`) : null);
+          setSaveStatus('saved');
+          autosaveEnabledRef.current = true;
           setIsExamActive(true);
           
           // The backend deadline is authoritative; the UI timer is only a display.
           const remaining = Math.max(0, Math.floor((new Date(takeData.deadline).getTime() - Date.now()) / 1000));
           setTimeLeft(remaining);
+        } else if (info.status === 'completed') {
+          const result = await api.getCandidateSessionResult();
+          setCompletedResults(result);
         } else {
           setTimeLeft((info.duration || 20) * 60);
         }
       } catch (err) {
-        addToast(err.message, 'error');
+        if (!handleCandidateSessionError(err)) addToastRef.current(err.message, 'error');
       } finally {
         setLoading(false);
       }
     };
     loadSession();
-  }, []);
+  }, [handleCandidateSessionError]);
 
   // Focus loss tracking thread
   useEffect(() => {
@@ -60,8 +92,9 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
       focusTimer = setTimeout(async () => {
         try {
           await api.logFocusLost();
-          addToast('⚠️ Tab switching detected! This event has been logged for review.', 'error');
+          addToastRef.current('⚠️ Tab switching detected! This event has been logged for review.', 'error');
         } catch (err) {
+          if (handleCandidateSessionError(err)) return;
           console.error('Failed to log focus loss:', err);
         }
       }, 500);
@@ -81,7 +114,7 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (focusTimer) clearTimeout(focusTimer);
     };
-  }, [isExamActive]);
+  }, [isExamActive, handleCandidateSessionError]);
 
   // Countdown timer thread
   useEffect(() => {
@@ -113,21 +146,78 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
       const data = await api.startSession(candidateName);
       setSessionInfo(data);
       setQuestions(data.questions);
+      setResponses({});
+      responsesRef.current = {};
+      autosaveVersionRef.current = 0;
+      setSaveStatus('saved');
+      setLastSavedAt(null);
+      autosaveEnabledRef.current = true;
       setIsExamActive(true);
       setTimeLeft(Math.max(0, Math.floor((new Date(data.deadline).getTime() - Date.now()) / 1000)));
       addToast('Assessment started. Timer is active.');
     } catch (err) {
-      addToast(err.message, 'error');
+      if (!handleCandidateSessionError(err)) addToast(err.message, 'error');
     } finally {
       setLoading(false);
     }
   };
 
+  const persistResponses = async (snapshot, version) => {
+    if (!autosaveEnabledRef.current) return;
+    if (!navigator.onLine) {
+      setSaveStatus('offline');
+      return;
+    }
+    setSaveStatus('saving');
+    try {
+      const result = await api.saveSessionResponses(snapshot, version);
+      if (version === autosaveVersionRef.current && autosaveEnabledRef.current) {
+        setSaveStatus('saved');
+        setLastSavedAt(result.responses_updated_at ? new Date(`${result.responses_updated_at}Z`) : new Date());
+      }
+    } catch (err) {
+      if (handleCandidateSessionError(err)) return;
+      if (version === autosaveVersionRef.current && autosaveEnabledRef.current) {
+        setSaveStatus(navigator.onLine ? 'error' : 'offline');
+        autosaveTimerRef.current = setTimeout(() => persistResponses(snapshot, version), 3000);
+      }
+    }
+  };
+
+  const queueAutosave = (snapshot, delay = 700) => {
+    if (!autosaveEnabledRef.current) return;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    const version = ++autosaveVersionRef.current;
+    setSaveStatus(navigator.onLine ? 'saving' : 'offline');
+    autosaveTimerRef.current = setTimeout(() => persistResponses(snapshot, version), delay);
+  };
+  queueAutosaveRef.current = queueAutosave;
+
+  useEffect(() => {
+    const handleOnline = () => {
+      if (autosaveEnabledRef.current) queueAutosaveRef.current?.(responsesRef.current, 0);
+    };
+    const handleOffline = () => {
+      if (autosaveEnabledRef.current) setSaveStatus('offline');
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      autosaveEnabledRef.current = false;
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, []);
+
   const handleSelectOption = (qId, optId) => {
-    setResponses(prev => ({
-      ...prev,
-      [qId]: optId
-    }));
+    setResponses(prev => {
+      if (String(prev[qId]) === String(optId)) return prev;
+      const next = { ...prev, [qId]: optId };
+      responsesRef.current = next;
+      queueAutosave(next);
+      return next;
+    });
   };
 
   const handleAutoSubmit = () => {
@@ -136,32 +226,35 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
   };
 
   const handleSubmitClick = () => {
-    const answeredCount = Object.keys(responses).length;
-    const totalCount = questions.length;
-    const unanswered = totalCount - answeredCount;
+    setShowSubmitConfirmation(true);
+  };
 
-    let confirmMsg = 'Are you sure you want to submit your answers?';
-    if (unanswered > 0) {
-      confirmMsg = `You have ${unanswered} unanswered questions. ${confirmMsg}`;
-    }
-
-    if (confirm(confirmMsg)) {
-      submitExam(false);
-    }
+  const handleConfirmSubmit = () => {
+    setShowSubmitConfirmation(false);
+    submitExam(false);
   };
 
   const submitExam = async (isAuto = false) => {
     if (isSubmitting) return;
+    autosaveEnabledRef.current = false;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    setShowSubmitConfirmation(false);
     setIsSubmitting(true);
     setIsExamActive(false);
 
     try {
-      const result = await api.submitSessionAnswers(responses);
+      const result = await api.submitSessionAnswers(responsesRef.current);
       addToast('Assessment responses saved successfully!');
       setCompletedResults(result);
       setSessionInfo(prev => ({ ...prev, ...result, status: 'completed' }));
     } catch (err) {
-      addToast(err.message, 'error');
+      const sessionWasReplaced = handleCandidateSessionError(err);
+      if (!sessionWasReplaced) addToast(err.message, 'error');
+      if (!sessionWasReplaced && !isAuto) {
+        autosaveEnabledRef.current = true;
+        setIsExamActive(true);
+        queueAutosave(responsesRef.current, 0);
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -185,6 +278,15 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+    } catch (err) {
+      if (!handleCandidateSessionError(err)) addToast(err.message, 'error');
+    }
+  };
+
+  const handleCandidateLogout = async () => {
+    try {
+      await api.candidateLogout();
+      window.location.reload();
     } catch (err) {
       addToast(err.message, 'error');
     }
@@ -237,7 +339,7 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
               Download SEB Config
             </button>
             <a 
-              href="https://safeexambrowser.org/download.html" 
+              href="https://safeexambrowser.org/download_en.html"
               target="_blank" 
               rel="noopener noreferrer" 
               className="btn btn-secondary" 
@@ -246,6 +348,15 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
               Get SEB Browser
             </a>
           </div>
+          <button
+            type="button"
+            onClick={handleCandidateLogout}
+            className="btn btn-accent"
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+          >
+            <LogOut size={16} />
+            Log out
+          </button>
           <EDataBranding variant={darkMode ? 'dark' : 'light'} />
         </div>
       </div>
@@ -379,6 +490,14 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: timeLeft < 180 ? '#FFCDD2' : '#E0F2F1', fontWeight: 700, background: timeLeft < 180 ? 'rgba(211, 47, 47, 0.2)' : 'rgba(255, 255, 255, 0.08)', padding: '0.5rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255, 255, 255, 0.12)' }}>
               <Clock size={18} className={timeLeft < 180 ? 'animate-spin' : ''} style={{ color: timeLeft < 180 ? '#FF8A80' : '#80CBC4' }} />
               <span style={{ fontSize: '1.1rem', fontFamily: 'monospace', color: 'white' }}>{formatTime(timeLeft)}</span>
+            </div>
+
+            <div
+              title={lastSavedAt ? `Last saved at ${formatTimeUK(lastSavedAt)}` : 'Answers are saved automatically'}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', fontWeight: 700, color: saveStatus === 'saved' ? '#C8E6C9' : saveStatus === 'saving' ? '#FFF9C4' : '#FFCDD2' }}
+            >
+              {saveStatus === 'saved' ? <CheckCircle size={15} /> : saveStatus === 'saving' ? <RefreshCw className="animate-spin" size={15} /> : <AlertTriangle size={15} />}
+              <span>{saveStatus === 'saved' ? 'Answers saved' : saveStatus === 'saving' ? 'Saving answers...' : saveStatus === 'offline' ? 'Offline — waiting to save' : 'Save failed — retrying'}</span>
             </div>
             
             <button onClick={handleSubmitClick} className="btn btn-primary btn-sm" style={{ border: '1px solid rgba(255,255,255,0.2)' }}>
@@ -562,6 +681,56 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
             </div>
           </nav>
         </div>
+
+        {showSubmitConfirmation && (
+          <div
+            className="modal-overlay"
+            role="presentation"
+            style={{ alignItems: 'center', padding: '1.5rem' }}
+          >
+            <div
+              className="modal-content animate-fade"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="submit-confirmation-title"
+              aria-describedby="submit-confirmation-description"
+              style={{ maxWidth: '460px' }}
+            >
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                <div style={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', justifyContent: 'center', width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(237, 108, 2, 0.12)', color: 'var(--color-warning)' }}>
+                  <AlertTriangle size={24} />
+                </div>
+                <div>
+                  <h3 id="submit-confirmation-title" style={{ margin: '0 0 0.5rem' }}>Submit your assessment?</h3>
+                  <p id="submit-confirmation-description" style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {questions.length - answeredCount > 0
+                      ? `You have ${questions.length - answeredCount} unanswered ${questions.length - answeredCount === 1 ? 'question' : 'questions'}. Submitting will finalize your assessment.`
+                      : 'All questions have been answered. Submitting will finalize your assessment.'}
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.75rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-accent"
+                  onClick={() => setShowSubmitConfirmation(false)}
+                  disabled={isSubmitting}
+                >
+                  Continue Assessment
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleConfirmSubmit}
+                  disabled={isSubmitting}
+                >
+                  Submit Answers
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -572,6 +741,9 @@ export default function TestRunner({ addToast, darkMode, setDarkMode }) {
         initialResults={completedResults}
         candidateView
         addToast={addToast}
+        onExitExamBrowser={requireSEB && isInSEB
+          ? () => window.location.assign('/seb/quit')
+          : null}
       />
     );
   }

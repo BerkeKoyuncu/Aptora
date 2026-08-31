@@ -122,6 +122,7 @@ const setCandidateSessionCookie = (res, candidate) => {
   const token = jwt.sign({
     id: candidate.id,
     session_id: candidate.session_id,
+    session_key: candidate.candidate_session_key || undefined,
     role: 'candidate',
     jti: crypto.randomUUID()
   }, JWT_SECRET, { ...CANDIDATE_JWT_OPTIONS, expiresIn: '4h' });
@@ -177,13 +178,42 @@ const authenticateCandidate = async (req, res, next) => {
   try {
     const payload = jwt.verify(token, JWT_SECRET, CANDIDATE_JWT_OPTIONS);
     const candidate = await db.get(
-      `SELECT ca.id, ca.email, ca.session_id, ts.status, ts.expires_at
+      `SELECT ca.id, ca.email, ca.session_id, ts.status, ts.expires_at, ts.candidate_session_key
        FROM candidate_accounts ca
        JOIN test_sessions ts ON ts.id = ca.session_id
        WHERE ca.id = ? AND ca.session_id = ?`,
       [payload.id, payload.session_id]
     );
-    if (!candidate || !['pending', 'active'].includes(candidate.status)) {
+    if (!candidate) {
+      const completedSession = await db.get(
+        `SELECT id AS session_id, candidate_email AS email, status, candidate_session_key
+         FROM test_sessions WHERE id = ? AND status = 'completed'`,
+        [payload.session_id]
+      );
+      if (completedSession) {
+        if (payload.session_key !== (completedSession.candidate_session_key || undefined)) {
+          clearCandidateSessionCookie(res);
+          return res.status(401).json({
+            error: 'This candidate session was replaced by a newer login. Sign in again to continue.',
+            code: 'CANDIDATE_SESSION_REPLACED'
+          });
+        }
+        req.candidate = { ...completedSession, id: payload.id, completed_recovery: true };
+        return next();
+      }
+      clearCandidateSessionCookie(res);
+      return res.status(403).json({ error: 'Candidate account is no longer active' });
+    }
+    // A successful login replaces the previous browser session. Null remains
+    // compatible with cookies issued before this migration until the next login.
+    if (payload.session_key !== (candidate.candidate_session_key || undefined)) {
+      clearCandidateSessionCookie(res);
+      return res.status(401).json({
+        error: 'This candidate session was replaced by a newer login. Sign in again to continue.',
+        code: 'CANDIDATE_SESSION_REPLACED'
+      });
+    }
+    if (!['pending', 'active'].includes(candidate.status)) {
       clearCandidateSessionCookie(res);
       return res.status(403).json({ error: 'Candidate account is no longer active' });
     }

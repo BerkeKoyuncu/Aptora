@@ -12,6 +12,7 @@ $logDir = Join-Path $dataDir 'logs'
 $nodeExe = Join-Path $installDir 'bin\node.exe'
 $backendScript = Join-Path $installDir 'run-backend.bat'
 $taskName = 'Aptora Server'
+$startupTimeoutSeconds = 45
 
 function Import-AptoraEnvironment {
   if (-not (Test-Path -LiteralPath $envFile)) { throw "Production configuration not found: $envFile" }
@@ -35,6 +36,40 @@ function Get-AptoraProcess {
   return $process
 }
 
+function Get-AptoraPort {
+  $aptoraPort = 9372
+  if (-not (Test-Path -LiteralPath $envFile)) { return $aptoraPort }
+  foreach ($line in Get-Content -LiteralPath $envFile) {
+    if ($line -match '^PORT=(\d+)$') {
+      $configuredPort = 0
+      if ([int]::TryParse($Matches[1], [ref]$configuredPort) -and $configuredPort -ge 1 -and $configuredPort -le 65535) {
+        return $configuredPort
+      }
+    }
+  }
+  return $aptoraPort
+}
+
+function Test-AptoraHealth {
+  $aptoraPort = Get-AptoraPort
+  try {
+    $response = Invoke-RestMethod -Uri "http://127.0.0.1:$aptoraPort/api/health" `
+      -Method Get -TimeoutSec 2 -UseBasicParsing
+    return $response.service -eq 'aptora' -and $response.status -eq 'ok'
+  } catch {
+    return $false
+  }
+}
+
+function Wait-AptoraReady([int]$timeoutSeconds) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+  do {
+    if (Test-AptoraHealth) { return $true }
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+  return $false
+}
+
 function Rotate-Log([string]$path) {
   if ((Test-Path -LiteralPath $path) -and (Get-Item -LiteralPath $path).Length -gt 10MB) {
     $archive = "$path.1"
@@ -44,8 +79,12 @@ function Rotate-Log([string]$path) {
 }
 
 function Start-Aptora {
-  $running = Get-AptoraProcess
-  if ($running) { Write-Output "Aptora is already running (PID $($running.Id))."; return }
+  if (Test-AptoraHealth) {
+    $running = Get-AptoraProcess
+    if ($running) { Write-Output "Aptora is already running (PID $($running.Id))." }
+    else { Write-Output 'Aptora is already running.' }
+    return
+  }
   if (Test-Path -LiteralPath $pidFile) { Remove-Item -LiteralPath $pidFile -Force }
   New-Item -ItemType Directory -Path $logDir -Force | Out-Null
   $stdoutLog = Join-Path $logDir 'server-out.log'
@@ -54,16 +93,23 @@ function Start-Aptora {
   Rotate-Log $stderrLog
   $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   if ($task) {
-    Start-ScheduledTask -TaskName $taskName
+    if ($task.State -ne 'Running') { Start-ScheduledTask -TaskName $taskName }
   } else {
     Import-AptoraEnvironment
     Start-Process -FilePath $nodeExe -ArgumentList @('server/server.js') -WorkingDirectory $installDir `
       -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog | Out-Null
   }
-  Start-Sleep -Seconds 3
+  if (-not (Wait-AptoraReady $startupTimeoutSeconds)) {
+    $taskResult = ''
+    if ($task) {
+      $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+      if ($taskInfo) { $taskResult = " Scheduled task result: $($taskInfo.LastTaskResult)." }
+    }
+    throw "Aptora did not become ready within $startupTimeoutSeconds seconds.$taskResult Check $stderrLog"
+  }
   $process = Get-AptoraProcess
-  if (-not $process) { throw "Aptora failed to start. Check $stderrLog" }
-  Write-Output "Aptora started (PID $($process.Id))."
+  if ($process) { Write-Output "Aptora started (PID $($process.Id))." }
+  else { Write-Output 'Aptora started.' }
 }
 
 function Stop-Aptora {
@@ -75,7 +121,7 @@ function Stop-Aptora {
   $running = Get-AptoraProcess
   if ($running) {
     Stop-Process -Id $running.Id -Force
-    $running.WaitForExit(5000)
+    $running.WaitForExit(5000) | Out-Null
     Write-Output 'Aptora stopped.'
   } else { Write-Output 'Aptora is not running.' }
   if (Test-Path -LiteralPath $pidFile) { Remove-Item -LiteralPath $pidFile -Force }
@@ -94,7 +140,15 @@ switch ($Action) {
   'Start' { Start-Aptora }
   'Stop' { Stop-Aptora }
   'Restart' { Stop-Aptora; Start-Aptora }
-  'Status' { $p = Get-AptoraProcess; if ($p) { "RUNNING PID=$($p.Id)" } else { 'STOPPED' } }
+  'Status' {
+    if (Test-AptoraHealth) {
+      $p = Get-AptoraProcess
+      if ($p) { "RUNNING PID=$($p.Id)" } else { 'RUNNING' }
+    } else {
+      $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+      if ($task -and $task.State -eq 'Running') { 'STARTING' } else { 'STOPPED' }
+    }
+  }
   'InstallTask' { Install-AptoraTask }
   'RemoveTask' { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue; 'Automatic startup task removed.' }
   'EnableTask' { Enable-ScheduledTask -TaskName $taskName | Out-Null; 'Automatic startup enabled.' }

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import EDataBranding from './EDataBranding';
-import { Printer, Download, ArrowLeft, RefreshCw, Award, Clock, BookOpen, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { Printer, Download, ArrowLeft, RefreshCw, Award, Clock, BookOpen, AlertCircle, CheckCircle, XCircle, LogOut } from 'lucide-react';
+import { formatDateUK, formatDateTimeUK } from '../utils/dateFormat';
 
 const DIFFICULTY_LABELS = { 1: 'Beginner', 2: 'Elementary', 3: 'Intermediate', 4: 'Advanced', 5: 'Expert' };
 const csvCell = (value) => {
@@ -27,14 +28,20 @@ export default function TestResultsView({
   onBackToDashboard,
   adminView = false,
   initialResults = null,
-  candidateView = false
+  candidateView = false,
+  onExitExamBrowser = null
 }) {
   const [results, setResults] = useState(initialResults);
   const [loading, setLoading] = useState(!initialResults);
+  const [decisionStatus, setDecisionStatus] = useState(initialResults?.decision_status || 'manual_review');
+  const [decisionNote, setDecisionNote] = useState(initialResults?.decision_note || '');
+  const [savingDecision, setSavingDecision] = useState(false);
 
   useEffect(() => {
     if (initialResults) {
       setResults(initialResults);
+      setDecisionStatus(initialResults.decision_status || 'manual_review');
+      setDecisionNote(initialResults.decision_note || '');
       setLoading(false);
       return;
     }
@@ -44,6 +51,8 @@ export default function TestResultsView({
         if (!adminView) throw new Error('Administrator access is required to view assessment results.');
         const data = await api.getAdminSessionResults(sessionId);
         setResults(data);
+        setDecisionStatus(data.decision_status || 'manual_review');
+        setDecisionNote(data.decision_note || '');
       } catch (err) {
         addToast(err.message, 'error');
       } finally {
@@ -57,6 +66,19 @@ export default function TestResultsView({
     window.print();
   };
 
+  const handleSaveDecision = async () => {
+    try {
+      setSavingDecision(true);
+      const updated = await api.updateSessionDecision(results.id, decisionStatus, decisionNote);
+      setResults(current => ({ ...current, ...updated }));
+      addToast(updated.message);
+    } catch (err) {
+      addToast(err.message, 'error');
+    } finally {
+      setSavingDecision(false);
+    }
+  };
+
   const handleExportCSV = () => {
     if (!results) return;
 
@@ -66,8 +88,14 @@ export default function TestResultsView({
     csvContent += "Developed by E-Data Teknoloji\n";
     csvContent += `Candidate:,${csvCell(results.candidate_name)}\n`;
     csvContent += `Email:,${csvCell(results.candidate_email)}\n`;
-    csvContent += `Date Completed:,${new Date(results.completed_at).toLocaleString()}\n`;
+    csvContent += `Date Completed:,${formatDateTimeUK(results.completed_at)}\n`;
     csvContent += `Total Score:,${results.percentage} / 100\n\n`;
+    csvContent += `Pass Threshold:,${results.pass_threshold ?? 70}%\n`;
+    if (adminView) {
+      csvContent += `Admin Decision:,${csvCell(results.decision_status || 'manual_review')}\n`;
+      csvContent += `Admin Note:,${csvCell(results.decision_note || '')}\n`;
+    }
+    csvContent += "\n";
 
     // Domain breakdown header
     csvContent += "DOMAIN SUCCESS BREAKDOWN\n";
@@ -130,7 +158,8 @@ export default function TestResultsView({
     );
   }
 
-  const passed = results.percentage >= 70;
+  const passThreshold = Number(results.pass_threshold ?? 70);
+  const passed = results.percentage >= passThreshold;
 
   return (
     <div className="animate-fade" style={{ maxWidth: '1000px', margin: '2rem auto', padding: '0 1.5rem', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
@@ -144,7 +173,7 @@ export default function TestResultsView({
           </button>
         ) : <span />}
 
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: '0.75rem' }}>
           <button onClick={handleExportCSV} className="btn btn-accent" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
             <Download size={16} />
             <span>Export CSV</span>
@@ -153,12 +182,61 @@ export default function TestResultsView({
             <Printer size={16} />
             <span>Print Report (PDF)</span>
           </button>
+          {onExitExamBrowser && (
+            <button onClick={onExitExamBrowser} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <LogOut size={16} />
+              <span>Exit Safe Exam Browser</span>
+            </button>
+          )}
         </div>
       </div>
 
       {candidateView && (
         <div className="card no-print" style={{ borderLeft: '4px solid var(--color-success)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
           Your test is complete and your temporary login account has been removed. You can review, print, or export this result while this page remains open.
+        </div>
+      )}
+
+      {adminView && (
+        <div className="card no-print" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', borderLeft: '4px solid var(--color-primary)' }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Administrator Decision</h3>
+            <p style={{ margin: '0.35rem 0 0', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+              Automatic result: <strong>{passed ? 'Passed' : 'Failed'}</strong> using a {passThreshold}% threshold. Record the internal hiring decision separately below.
+            </p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: '1rem', alignItems: 'start' }}>
+            <div>
+              <label>Decision</label>
+              <select value={decisionStatus} onChange={event => setDecisionStatus(event.target.value)}>
+                <option value="manual_review">Manual Review</option>
+                <option value="proceed">Proceed</option>
+                <option value="hold">Hold</option>
+                <option value="reject">Reject</option>
+              </select>
+            </div>
+            <div>
+              <label>Internal Note</label>
+              <textarea
+                value={decisionNote}
+                onChange={event => setDecisionNote(event.target.value)}
+                maxLength={4000}
+                rows={3}
+                placeholder="Add an internal evaluation note..."
+                style={{ width: '100%', resize: 'vertical' }}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+              {results.decided_at
+                ? `Last updated by ${results.decided_by_name || 'an administrator'} on ${formatDateTimeUK(results.decided_at)}`
+                : 'No administrator decision has been recorded yet.'}
+            </span>
+            <button type="button" className="btn btn-primary" onClick={handleSaveDecision} disabled={savingDecision}>
+              {savingDecision ? 'Saving...' : 'Save Decision'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -183,7 +261,7 @@ export default function TestResultsView({
               </p>
             </div>
             <span className={`badge ${passed ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: '1rem', padding: '0.5rem 1rem' }}>
-              {passed ? 'PASSED' : 'RE-AUDIT NEEDED'}
+              {passed ? 'PASSED' : 'FAILED'} · THRESHOLD {passThreshold}%
             </span>
           </div>
         </div>
@@ -202,7 +280,7 @@ export default function TestResultsView({
               <span>{getElapsedTime(results.started_at, results.completed_at)}</span>
             </div>
             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Ended {new Date(results.completed_at).toLocaleDateString()}
+              Ended {formatDateUK(results.completed_at)}
             </span>
           </div>
           <div>
@@ -212,7 +290,7 @@ export default function TestResultsView({
               <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>/ 100</span>
             </div>
             <span style={{ fontSize: '0.8rem', fontWeight: 700, color: passed ? 'var(--color-success)' : 'var(--color-error)' }}>
-              ({passed ? 'PASSED' : 'RE-AUDIT NEEDED'})
+              ({passed ? 'PASSED' : 'FAILED'} · Threshold {passThreshold}%)
             </span>
           </div>
           <div>

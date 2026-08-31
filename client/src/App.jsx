@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api } from './api';
 import {
   Shield, Key, Users, Database, Mail, History, FileText, CheckCircle,
   XCircle, AlertCircle, Plus, Edit, Trash2, LogOut, Settings, Award,
   Clock, ArrowRight, ArrowLeft, RefreshCw, Check, X, Download, Printer, ChevronRight,
-  Sun, Moon, Menu, ChevronLeft, Eye, EyeOff
+  Sun, Moon, Menu, ChevronLeft, Eye, EyeOff, ShieldCheck, Info
 } from 'lucide-react';
 
 // Subcomponents (we will create these next)
@@ -19,6 +19,8 @@ import TestHistory from './components/TestHistory';
 import TestExecutionHistory from './components/TestExecutionHistory';
 import EDataBranding from './components/EDataBranding';
 import EmailSettings from './components/EmailSettings';
+import AuditLog from './components/AuditLog';
+import SystemInformation from './components/SystemInformation';
 
 export default function App() {
   // Navigation / Routing state
@@ -104,13 +106,13 @@ export default function App() {
   };
 
   // Trigger custom toast
-  const addToast = (message, type = 'success') => {
+  const addToast = useCallback((message, type = 'success') => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 4000);
-  };
+  }, []);
 
   // Only administrator report deep links remain; candidates enter from the login page.
   useEffect(() => {
@@ -218,7 +220,12 @@ export default function App() {
   if (candidate) {
     return (
       <>
-        <TestRunner addToast={addToast} darkMode={darkMode} setDarkMode={setDarkMode} />
+        <TestRunner
+          addToast={addToast}
+          darkMode={darkMode}
+          setDarkMode={setDarkMode}
+          onSessionInvalidated={() => setCandidate(null)}
+        />
         <ToastContainer toasts={toasts} />
       </>
     );
@@ -411,6 +418,8 @@ export default function App() {
               <SidebarButton active={activeTab === 'users'} onClick={() => { setActiveTab('users'); setOpenAddModalOnLoad(false); }} icon={<Users size={18} />} label="Manage Users" collapsed={sidebarCollapsed} />
               <SidebarButton active={activeTab === 'mailbox'} onClick={() => { setActiveTab('mailbox'); setOpenAddModalOnLoad(false); }} icon={<Mail size={18} />} label="Virtual Mailbox" collapsed={sidebarCollapsed} />
               <SidebarButton active={activeTab === 'email-settings'} onClick={() => { setActiveTab('email-settings'); setOpenAddModalOnLoad(false); }} icon={<Settings size={18} />} label="Email Settings" collapsed={sidebarCollapsed} />
+              <SidebarButton active={activeTab === 'audit-log'} onClick={() => { setActiveTab('audit-log'); setOpenAddModalOnLoad(false); }} icon={<ShieldCheck size={18} />} label="Security Audit Log" collapsed={sidebarCollapsed} />
+              <SidebarButton active={activeTab === 'system-info'} onClick={() => { setActiveTab('system-info'); setOpenAddModalOnLoad(false); }} icon={<Info size={18} />} label="System Information" collapsed={sidebarCollapsed} />
             </>
           )}
 
@@ -467,6 +476,14 @@ export default function App() {
 
           {activeTab === 'email-settings' && user.role === 'admin' && (
             <EmailSettings user={user} addToast={addToast} />
+          )}
+
+          {activeTab === 'audit-log' && user.role === 'admin' && (
+            <AuditLog addToast={addToast} />
+          )}
+
+          {activeTab === 'system-info' && user.role === 'admin' && (
+            <SystemInformation addToast={addToast} />
           )}
 
           {activeTab === 'settings' && (

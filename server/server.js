@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const db = require('./db');
 const routes = require('./routes');
-const { isProduction, publicUrl, allowedOrigins, trustProxy, listenHost, auditRetentionDays } = require('./config');
+const { appVersion, isProduction, publicUrl, allowedOrigins, trustProxy, listenHost, auditRetentionDays } = require('./config');
 
 const app = express();
 const PORT = process.env.PORT || 9372;
@@ -17,20 +17,38 @@ if (trustProxy) {
 
 app.disable('x-powered-by');
 
-// Restrict cross-origin API calls to explicitly configured web origins.
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin.replace(/\/+$/, ''))) {
-      return callback(null, true);
-    }
-    const error = new Error('Origin is not allowed by CORS.');
-    error.status = 403;
-    return callback(error);
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Aptora-Session-Token'],
-  credentials: true,
-  maxAge: 86400,
+// Used by the Windows control panel to distinguish a ready Aptora instance
+// from a stale PID file or another application listening on the same port.
+app.get('/api/health', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ service: 'aptora', status: 'ok', version: appVersion });
+});
+
+// Allow normal same-origin access on any server interface while restricting
+// genuinely cross-origin API calls to explicitly configured origins.
+app.use(cors((req, callback) => {
+  let requestOrigin = '';
+  try {
+    requestOrigin = new URL(`${req.protocol}://${req.get('host')}`).origin;
+  } catch {
+    // An invalid Host header will not be treated as an allowed origin.
+  }
+
+  callback(null, {
+    origin(origin, originCallback) {
+      const normalizedOrigin = origin ? origin.replace(/\/+$/, '') : '';
+      if (!origin || normalizedOrigin === requestOrigin || allowedOrigins.includes(normalizedOrigin)) {
+        return originCallback(null, true);
+      }
+      const error = new Error('Origin is not allowed by CORS.');
+      error.status = 403;
+      return originCallback(error);
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Aptora-Session-Token'],
+    credentials: true,
+    maxAge: 86400,
+  });
 }));
 
 // Baseline browser security headers without requiring an additional runtime package.
@@ -202,10 +220,16 @@ const startServer = async () => {
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));
+    return httpServer;
   } catch (error) {
     console.error('Failed to initialize database or start server:', error);
-    process.exit(1);
+    if (require.main === module) process.exit(1);
+    throw error;
   }
 };
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { app, startServer };

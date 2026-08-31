@@ -25,7 +25,10 @@ const request = async (endpoint, options = {}) => {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    const error = new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    error.status = response.status;
+    error.code = errorData.code;
+    throw error;
   }
 
   return response.json();
@@ -68,6 +71,16 @@ export const api = {
 
   updateProfile: (payload) =>
     request('/auth/profile', { method: 'PUT', body: payload }),
+
+  getAuditLogs: ({ page = 1, pageSize = 25, search = '', action = '' } = {}) => {
+    const params = new URLSearchParams({ page, page_size: pageSize });
+    if (search) params.set('search', search);
+    if (action) params.set('action', action);
+    return request(`/admin/audit-logs?${params.toString()}`, { method: 'GET' });
+  },
+
+  getSystemInfo: () =>
+    request('/admin/system-info', { method: 'GET' }),
 
   // User Management (Admin)
   getUsers: () =>
@@ -127,6 +140,12 @@ export const api = {
   getSessionTake: () =>
     candidateRequest('take', { method: 'GET' }),
 
+  getCandidateSessionResult: () =>
+    candidateRequest('result', { method: 'GET' }),
+
+  saveSessionResponses: (responses, version) =>
+    candidateRequest('responses', { method: 'PUT', body: { responses, version } }),
+
   submitSessionAnswers: (responses) =>
     candidateRequest('submit', { method: 'POST', body: { responses } }),
 
@@ -150,8 +169,31 @@ export const api = {
   deleteEmail: (id) =>
     request(`/emails/${id}`, { method: 'DELETE' }),
 
+  retryEmail: (id) =>
+    request(`/emails/${id}/retry`, { method: 'POST' }),
+
   deleteSession: (id) =>
     request('/admin/session', { method: 'DELETE', headers: { 'X-Aptora-Session-Token': id } }),
+
+  extendCandidateSession: (id, hours) =>
+    request('/admin/session/extend', {
+      method: 'POST',
+      headers: { 'X-Aptora-Session-Token': id },
+      body: { hours }
+    }),
+
+  revokeCandidateSession: (id) =>
+    request('/admin/session/revoke', {
+      method: 'POST',
+      headers: { 'X-Aptora-Session-Token': id }
+    }),
+
+  updateSessionDecision: (id, decision_status, decision_note) =>
+    request('/admin/session-decision', {
+      method: 'PUT',
+      headers: { 'X-Aptora-Session-Token': id },
+      body: { decision_status, decision_note }
+    }),
 
   updateCandidateCredentials: (sessionId, candidate_email, candidate_password) =>
     request('/admin/candidate-credentials', {

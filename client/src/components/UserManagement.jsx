@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import { Users, Plus, Edit, Trash2, RefreshCw, XCircle } from 'lucide-react';
+import { formatDateUK } from '../utils/dateFormat';
 
 export default function UserManagement({ user: currentUser, addToast }) {
   const [users, setUsers] = useState([]);
@@ -215,7 +216,7 @@ export default function UserManagement({ user: currentUser, addToast }) {
                     {u.twofa_enabled ? 'Active' : 'Disabled'}
                   </span>
                 </td>
-                <td>{new Date(u.created_at).toLocaleDateString()}</td>
+                <td>{formatDateUK(u.created_at)}</td>
                 <td>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button onClick={() => handleOpenEdit(u)} className="btn btn-accent btn-sm" style={{ padding: '0.35rem' }}>
