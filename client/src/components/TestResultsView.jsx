@@ -200,7 +200,7 @@ export default function TestResultsView({
 
       {candidateView && (
         <div className="card no-print" style={{ borderLeft: '4px solid var(--color-success)', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-          Your test is complete and your temporary login account has been removed. Question-level answers are available only to administrators. Log out before closing the remote session.
+          Your test is complete and your temporary login account has been removed. Your question-by-question review is available below. Log out before closing the remote session.
         </div>
       )}
 
@@ -349,7 +349,7 @@ export default function TestResultsView({
         {Array.isArray(results.feedback) && (
         <div className="print-page-break" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <h3 style={{ fontSize: '1.1rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>
-            Question Audit Log
+            {candidateView ? 'Question Review' : 'Question Audit Log'}
           </h3>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -384,7 +384,7 @@ export default function TestResultsView({
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   {q.options.map(opt => {
                     const isCandidateChoice = q.selectedOptionId != null && String(q.selectedOptionId) === String(opt.id);
-                    const isCorrectChoice = opt.isCorrect;
+                    const isCorrectChoice = q.correctOptionId != null && String(q.correctOptionId) === String(opt.id);
                     
                     let bg = 'transparent';
                     let border = '1px solid var(--color-border)';

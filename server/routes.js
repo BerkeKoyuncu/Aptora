@@ -1952,7 +1952,7 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
     }
 
     if (session.status === 'completed') {
-      const completedResult = await loadSessionResult(req.params.id, false);
+      const completedResult = await loadSessionResult(req.params.id, true);
       if (completedResult.errorStatus) {
         return res.status(completedResult.errorStatus).json({ error: completedResult.error });
       }
@@ -1971,7 +1971,7 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
     }
     if (session.expired) {
       await finalizeExpiredSession(session);
-      const completedResult = await loadSessionResult(req.params.id, false);
+      const completedResult = await loadSessionResult(req.params.id, true);
       if (completedResult.errorStatus) {
         return res.status(completedResult.errorStatus).json({ error: completedResult.error });
       }
@@ -1991,7 +1991,7 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
         req.params.id, session.duration, `+${sessionSubmitGraceSeconds} seconds`]
     );
     if (update.changes !== 1) return res.status(409).json({ error: 'Session was already submitted or expired' });
-    const result = await loadSessionResult(req.params.id, false);
+    const result = await loadSessionResult(req.params.id, true);
     await db.run('DELETE FROM candidate_accounts WHERE session_id = ?', [req.params.id]);
     // Keep the already-issued signed browser session only for short-lived result
     // recovery. The deleted account cannot be used to sign in again.
@@ -2028,7 +2028,8 @@ async function loadSessionResult(sessionId, includeFeedback, includeInternalRevi
     if (includeFeedback) {
       feedback.push({
         id: question.id, question_text: question.question_text, domain: question.domain,
-        difficulty: question.difficulty, points: question.points, options: question.options,
+        difficulty: question.difficulty, points: question.points,
+        options: question.options.map(option => ({ id: option.id, text: option.text })),
         selectedOptionId, correctOptionId: correctOption?.id || null, isCorrect
       });
     }
@@ -2068,7 +2069,7 @@ async function loadSessionResult(sessionId, includeFeedback, includeInternalRevi
 
 router.get('/sessions/:id/result', requireCandidateAccount, async (req, res) => {
   try {
-    const result = await loadSessionResult(req.params.id, false);
+    const result = await loadSessionResult(req.params.id, true);
     if (result.errorStatus) return res.status(result.errorStatus).json({ error: result.error });
     delete result.result_expires_at;
     res.json(result);
@@ -2077,7 +2078,7 @@ router.get('/sessions/:id/result', requireCandidateAccount, async (req, res) => 
   }
 });
 
-// Detailed question-level report is available only to authenticated administrators.
+// Administrators receive the same question review plus internal hiring-decision fields.
 router.get('/admin/session-results', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const sessionId = String(req.get('x-aptora-session-token') || '').toLowerCase();
