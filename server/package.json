@@ -1,6 +1,6 @@
 {
   "name": "aptora-server",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Backend server for Aptora",
   "main": "server.js",
   "type": "commonjs",

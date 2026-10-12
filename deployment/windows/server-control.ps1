@@ -169,7 +169,7 @@ function Install-AptoraTask {
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
   # Always-on backend: no runtime deadline; retry failures at a bounded one-minute cadence.
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 255 -RestartInterval (New-TimeSpan -Minutes 1)
   # Explicit XML duration also handles older ScheduledTasks providers that omit zero.
   $settings.ExecutionTimeLimit = 'PT0S'
   $settings.Enabled = $true

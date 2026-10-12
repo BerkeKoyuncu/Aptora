@@ -69,7 +69,7 @@ function Assert-Policy([bool]$startup) {
   Assert ($script:qaTask.Triggers.Count -eq 1 -and $script:qaTask.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskBootTrigger') 'Single AtStartup trigger'
   Assert ($script:qaTask.Triggers[0].Enabled -eq $startup) 'Boot-trigger Enabled stores preference'
   Assert ($script:qaTask.Settings.ExecutionTimeLimit -eq 'PT0S') 'Unlimited runtime retained'
-  Assert ($script:qaTask.Settings.RestartCount -eq 999 -and $script:qaTask.Settings.RestartInterval -eq 'PT1M') 'Restart policy retained'
+  Assert ($script:qaTask.Settings.RestartCount -eq 255 -and $script:qaTask.Settings.RestartInterval -eq 'PT1M') 'Restart policy retained'
   Assert ($script:qaTask.Principal.UserId -eq 'SYSTEM' -and $script:qaTask.Principal.LogonType -eq 'ServiceAccount') 'SYSTEM retained'
 }
 Install-AptoraTask

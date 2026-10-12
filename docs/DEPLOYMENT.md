@@ -15,7 +15,7 @@ The installer does not configure router/NAT forwarding, upstream firewalls, VPN 
 ### Scheduled Task reliability and existing installations
 
 The `Aptora Server` task still runs as `SYSTEM` with an `AtStartup` trigger.
-Its execution limit is `PT0S` (unlimited), with up to **999 failure retries** at
+Its execution limit is `PT0S` (unlimited), with up to **255 failure retries** at
 `PT1M` intervals. Retries are finite, not a guarantee of recovery from a permanent
 fault; inspect the logs if they are exhausted. There is no 72-hour runtime cutoff
 and no tight restart loop. `run-backend.bat` passes through Node's exit code so
@@ -39,7 +39,7 @@ Expected settings:
 
 ```text
 ExecutionTimeLimit : PT0S
-RestartCount       : 999
+RestartCount       : 255
 RestartInterval    : PT1M
 ```
 
