@@ -128,10 +128,16 @@ function Stop-Aptora {
 }
 
 function Install-AptoraTask {
+  $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   $taskAction = New-ScheduledTaskAction -Execute $env:ComSpec -Argument "/d /s /c `"`"$backendScript`"`""
   $trigger = New-ScheduledTaskTrigger -AtStartup
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+  # Always-on backend: no runtime deadline; retry failures at a bounded one-minute cadence.
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+  # Explicit XML duration also handles older ScheduledTasks providers that omit zero.
+  $settings.ExecutionTimeLimit = 'PT0S'
+  if ($existingTask) { $settings.Enabled = $existingTask.Settings.Enabled }
   Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
   Write-Output 'Automatic startup task installed.'
 }

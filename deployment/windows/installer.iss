@@ -67,6 +67,7 @@ Type: files; Name: "{commondesktop}\Aptora.lnk"
 
 [Run]
 Filename: "{cmd}"; Parameters: "/c ""{app}\setup.bat"""; WorkingDir: "{app}"; Description: "Configure Aptora and create the administrator"; Flags: waituntilterminated skipifsilent; Check: NeedsInitialSetup
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server-control.ps1"" InstallTask"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; Check: ExistingInstallation
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server-control.ps1"" Start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; Check: ExistingInstallation
 Filename: "{app}\AptoraControlPanel.bat"; WorkingDir: "{app}"; Description: "Open Aptora Control Panel"; Flags: postinstall shellexec nowait skipifsilent
 

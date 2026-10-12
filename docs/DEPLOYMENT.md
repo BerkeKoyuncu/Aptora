@@ -12,6 +12,43 @@ If first-time setup is interrupted, rerunning the installer checks for an actual
 
 The installer does not configure router/NAT forwarding, upstream firewalls, VPN access, or backups. Reinstalling/upgrading application files and uninstalling preserve `%ProgramData%\Aptora` deliberately. Uninstall removes the installer-created Windows Firewall rule.
 
+### Scheduled Task reliability and existing installations
+
+The `Aptora Server` task still runs as `SYSTEM` with an `AtStartup` trigger.
+Its execution limit is `PT0S` (unlimited), with up to **999 failure retries** at
+`PT1M` intervals. Retries are finite, not a guarantee of recovery from a permanent
+fault; inspect the logs if they are exhausted. There is no 72-hour runtime cutoff
+and no tight restart loop. `run-backend.bat` passes through Node's exit code so
+nonzero process failures remain eligible for Task Scheduler recovery. Stop using
+the Control Panel or `Stop-ScheduledTask`, rather than killing Node directly, to
+request an administrative stop without failure recovery.
+
+Fresh setup installs this policy. Installer upgrades refresh the task before
+starting Aptora, without rerunning administrator enrollment. To refresh only the
+task on an existing installation, first deploy the updated `server-control.ps1`
+to the installed application directory, then run in elevated PowerShell:
+
+```powershell
+& 'C:\Program Files\Aptora\server-control.ps1' InstallTask
+Get-ScheduledTask -TaskName 'Aptora Server' |
+    Select-Object -ExpandProperty Settings |
+    Format-List ExecutionTimeLimit,RestartCount,RestartInterval
+```
+
+Expected settings:
+
+```text
+ExecutionTimeLimit : PT0S
+RestartCount       : 999
+RestartInterval    : PT1M
+```
+
+`InstallTask` only registers/refreshes the task and preserves an existing disabled
+state. It does not start or stop the backend, change `aptora.env`, or access the
+database, administrator accounts, application data or logs. If Aptora is already
+running, use the Control Panel's Restart during a maintenance window so the new
+policy applies to a new task invocation. Do not run `setup.bat` to refresh a task.
+
 ## 1. Configure the process environment
 
 The variables in `.env.example` are a reference; the application does not automatically load `.env` files. Define them in the service account, IIS process manager, PM2, or the shell that starts Node.
