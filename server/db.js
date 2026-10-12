@@ -7,6 +7,7 @@ const dataDir = process.env.APTORA_DATA_DIR || __dirname;
 fs.mkdirSync(dataDir, { recursive: true });
 const dbPath = path.join(dataDir, 'database.sqlite');
 const db = new sqlite3.Database(dbPath);
+db.configure('busyTimeout', 10000);
 
 // Wrap sqlite3 in Promises for async/await usage
 const query = (sql, params = []) => {
@@ -34,6 +35,36 @@ const run = (sql, params = []) => {
       else resolve({ id: this.lastID, changes: this.changes });
     });
   });
+};
+
+// Use an isolated connection so awaited statements in a transaction cannot
+// accidentally include writes belonging to another HTTP request.
+const transaction = async (work) => {
+  const connection = new sqlite3.Database(dbPath);
+  connection.configure('busyTimeout', 10000);
+  const execute = (method, sql, params = []) => new Promise((resolve, reject) => {
+    connection[method](sql, params, function (error, result) {
+      if (error) reject(error);
+      else resolve(method === 'run' ? { id: this.lastID, changes: this.changes } : result);
+    });
+  });
+  const tx = {
+    run: (sql, params) => execute('run', sql, params),
+    get: (sql, params) => execute('get', sql, params),
+    query: (sql, params) => execute('all', sql, params)
+  };
+  try {
+    await tx.run('PRAGMA foreign_keys = ON');
+    await tx.run('BEGIN IMMEDIATE');
+    const result = await work(tx);
+    await tx.run('COMMIT');
+    return result;
+  } catch (error) {
+    await tx.run('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    await new Promise(resolve => connection.close(resolve));
+  }
 };
 
 // Initialize schema and seed data
@@ -117,6 +148,15 @@ const initDb = async () => {
     // Ignore if column exists
   }
 
+  for (const migration of [
+    'ALTER TABLE tests ADD COLUMN updated_at DATETIME',
+    'ALTER TABLE tests ADD COLUMN updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL',
+    'ALTER TABLE tests ADD COLUMN revision INTEGER NOT NULL DEFAULT 1',
+    "ALTER TABLE tests ADD COLUMN pinned_questions TEXT NOT NULL DEFAULT '[]'"
+  ]) {
+    try { await run(migration); } catch (error) { if (!/duplicate column name/i.test(error.message)) throw error; }
+  }
+
   // Migration: Add focus_lost_count column to test_sessions table
   try {
     await run(`ALTER TABLE test_sessions ADD COLUMN focus_lost_count INTEGER DEFAULT 0`);
@@ -134,6 +174,8 @@ const initDb = async () => {
       FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE
     )
   `);
+  try { await run('ALTER TABLE test_selected_questions ADD COLUMN position INTEGER NOT NULL DEFAULT 0'); }
+  catch (error) { if (!/duplicate column name/i.test(error.message)) throw error; }
 
   // Create TestSessions table
   await run(`
@@ -186,6 +228,21 @@ const initDb = async () => {
   ]) {
     try { await run(migration); } catch { /* Column already exists */ }
   }
+
+  for (const migration of [
+    'ALTER TABLE test_sessions ADD COLUMN test_title_snapshot TEXT',
+    'ALTER TABLE test_sessions ADD COLUMN duration_snapshot INTEGER',
+    'ALTER TABLE test_sessions ADD COLUMN pass_threshold_snapshot INTEGER',
+    'ALTER TABLE test_sessions ADD COLUMN require_seb_snapshot INTEGER'
+  ]) {
+    try { await run(migration); } catch (error) { if (!/duplicate column name/i.test(error.message)) throw error; }
+  }
+  await run(`UPDATE test_sessions SET
+    test_title_snapshot = COALESCE(test_title_snapshot, (SELECT title FROM tests WHERE id = test_id)),
+    duration_snapshot = COALESCE(duration_snapshot, (SELECT duration FROM tests WHERE id = test_id)),
+    pass_threshold_snapshot = COALESCE(pass_threshold_snapshot, (SELECT pass_threshold FROM tests WHERE id = test_id)),
+    require_seb_snapshot = COALESCE(require_seb_snapshot, (SELECT require_seb FROM tests WHERE id = test_id))
+    WHERE status IN ('active', 'completed')`);
 
   // Candidate credentials are deliberately separate from administrator users.
   // The account is deleted after submission while its test_session remains as history.
@@ -615,5 +672,6 @@ module.exports = {
   query,
   get,
   run,
+  transaction,
   initDb
 };

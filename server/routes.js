@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
+const testConfig = require('./test-config');
+const { createTestExport } = require('./test-export');
 const {
   authenticateToken, requireRole, generate2FASecret, verify2FACode, encrypt, decrypt,
   getPasswordPolicyError, createTemporaryToken, verifyTemporaryToken,
@@ -28,7 +30,6 @@ const sha256 = (value) => crypto.createHash('sha256').update(value, 'utf8').dige
 const redactToken = (value) => String(value || '').replace(/[a-f0-9]{32}/gi, ':token');
 const SESSION_LINK_PLACEHOLDER = '[PASTE_SESSION_LINK_HERE]';
 const SEB_QUIT_PATH = '/seb/quit';
-const MAX_TEST_DURATION_MINUTES = 240;
 const formatTurkeyDateTimeUK = (value = new Date()) => new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Europe/Istanbul',
   day: '2-digit',
@@ -217,12 +218,12 @@ const finalizeExpiredSession = async (session) => {
 
 const finalizeExpiredSessions = async () => {
   const sessions = await db.query(
-    `SELECT ts.*, t.duration
+    `SELECT ts.*, COALESCE(ts.duration_snapshot, t.duration) AS duration
      FROM test_sessions ts
      JOIN tests t ON t.id = ts.test_id
      WHERE ts.status = 'active' AND ts.started_at IS NOT NULL
        AND CURRENT_TIMESTAMP > datetime(
-         ts.started_at, '+' || t.duration || ' minutes', ?
+         ts.started_at, '+' || COALESCE(ts.duration_snapshot, t.duration) || ' minutes', ?
        )`,
     [`+${sessionSubmitGraceSeconds} seconds`]
   );
@@ -1063,304 +1064,106 @@ router.get('/tests', authenticateToken, async (req, res) => {
   }
 });
 
-// Create Test (randomized or direct selection)
+// Create and edit share the same validation and question selection rules.
 router.post('/tests', authenticateToken, async (req, res) => {
-  const { title, num_questions = 10, difficulty_distribution, domains, is_random = true, selected_questions = [], duration, require_seb } = req.body;
-  const passThreshold = Number.parseInt(req.body?.pass_threshold ?? '70', 10);
-  const testDuration = duration === undefined ? 20 : Number(duration);
-
-  if (!title) {
-    return res.status(400).json({ error: 'Test title is required' });
-  }
-  if (!Number.isInteger(passThreshold) || passThreshold < 0 || passThreshold > 100) {
-    return res.status(400).json({ error: 'Pass threshold must be between 0 and 100' });
-  }
-  if (!Number.isInteger(testDuration) || testDuration < 1 || testDuration > MAX_TEST_DURATION_MINUTES) {
-    return res.status(400).json({ error: `Duration must be between 1 and ${MAX_TEST_DURATION_MINUTES} minutes` });
-  }
-
-  // Set default domains (all domains by default)
-  const defaultDomains = [
-    'Network Fundamentals',
-    'Network Security & Edge Security',
-    'Identity & Access Security',
-    'Security Operations & Monitoring',
-    'Vulnerability, Exposure & Security Testing',
-    'Application & Software Security',
-    'Data Security & Storage',
-    'Cloud & Data Centre Infrastructure',
-    'OT Security',
-    'General'
-  ];
-  const targetDomains = (domains && domains.length > 0) ? domains : defaultDomains;
-
-  // Set default difficulty distribution (Bell Curve)
-  // Level 1 (Beginner): 10%, Level 2: 20%, Level 3: 40%, Level 4: 20%, Level 5 (Expert): 10%
-  const defaultDist = { "1": 10, "2": 20, "3": 40, "4": 20, "5": 10 };
-  const targetDist = difficulty_distribution || defaultDist;
-
   try {
-    const testRequireSeb = require_seb === true || require_seb === 1 || require_seb === 'true' ? 1 : 0;
-    // 1. Insert test meta
-    const result = await db.run(
-      'INSERT INTO tests (title, created_by, num_questions, difficulty_distribution, domains, is_random, duration, require_seb, pass_threshold) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [title, req.user.id, num_questions, JSON.stringify(targetDist), JSON.stringify(targetDomains), is_random ? 1 : 0, testDuration, testRequireSeb, passThreshold]
-    );
-    const testId = result.id;
-
-    let finalQuestionIds = [];
-
-    // 2. Select questions
-    if (is_random) {
-      // Randomized question selector based on domain & difficulty distribution
-      const chosenQuestionsMap = new Map();
-
-      // Calculate domain quotas
-      const domainsQuota = {};
-      const D = targetDomains.length;
-      const baseCount = Math.floor(num_questions / D);
-      let remainder = num_questions % D;
-      
-      targetDomains.forEach((domain, idx) => {
-        domainsQuota[domain] = baseCount + (idx < remainder ? 1 : 0);
-      });
-
-      // Calculate difficulty quotas
-      const difficultyQuota = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0 };
-      let allocatedCount = 0;
-      const diffKeys = ["1", "2", "3", "4", "5"];
-      diffKeys.forEach((key) => {
-        const pct = targetDist[key] !== undefined ? targetDist[key] : 0;
-        const targetForLevel = Math.round(num_questions * (pct / 100));
-        difficultyQuota[key] = targetForLevel;
-        allocatedCount += targetForLevel;
-      });
-
-      // Adjust rounding discrepancy for difficulties
-      let diffDiff = num_questions - allocatedCount;
-      if (diffDiff !== 0) {
-        difficultyQuota["3"] += diffDiff;
-        if (difficultyQuota["3"] < 0) difficultyQuota["3"] = 0;
-      }
-
-      // If pre-selected (hybrid mode), pull their details to populate chosenQuestionsMap
-      let pinnedQuestions = [];
-      if (selected_questions && selected_questions.length > 0) {
-        const placeholders = selected_questions.map(() => '?').join(',');
-        pinnedQuestions = await db.query(`SELECT id, difficulty, domain FROM questions WHERE id IN (${placeholders})`, selected_questions);
-        pinnedQuestions.forEach(q => {
-          chosenQuestionsMap.set(q.id, q);
-
-          // Deduct from domain quota
-          if (domainsQuota[q.domain] !== undefined && domainsQuota[q.domain] > 0) {
-            domainsQuota[q.domain]--;
-          } else {
-            // If domain is not selected or quota is 0, deduct from any domain that has quota > 0
-            const k = Object.keys(domainsQuota).find(d => domainsQuota[d] > 0);
-            if (k) domainsQuota[k]--;
-          }
-
-          // Deduct from difficulty quota
-          const diffStr = String(q.difficulty);
-          if (difficultyQuota[diffStr] > 0) {
-            difficultyQuota[diffStr]--;
-          } else {
-            const k = diffKeys.find(d => difficultyQuota[d] > 0);
-            if (k) difficultyQuota[k]--;
-          }
-        });
-      }
-
-      // Greedy slot builder for the remaining count
-      const slots = [];
-      const remainingCount = num_questions - chosenQuestionsMap.size;
-      for (let i = 0; i < remainingCount; i++) {
-        // Find active domain with max quota
-        let bestDomain = null;
-        let maxDQuota = -1;
-        for (const d of Object.keys(domainsQuota)) {
-          if (domainsQuota[d] > maxDQuota && domainsQuota[d] > 0) {
-            maxDQuota = domainsQuota[d];
-            bestDomain = d;
-          }
-        }
-
-        // Find active difficulty with max quota
-        let bestDiff = null;
-        let maxDiffQuota = -1;
-        for (const df of diffKeys) {
-          if (difficultyQuota[df] > maxDiffQuota && difficultyQuota[df] > 0) {
-            maxDiffQuota = difficultyQuota[df];
-            bestDiff = df;
-          }
-        }
-
-        if (!bestDomain || !bestDiff) break; // Quotas exhausted
-
-        slots.push({ domain: bestDomain, difficulty: parseInt(bestDiff) });
-        domainsQuota[bestDomain]--;
-        difficultyQuota[bestDiff]--;
-      }
-
-      // Now, fetch questions for each slot
-      for (const slot of slots) {
-        // 1. Try to find questions with exact domain & difficulty, ordered by usage_count ASC, RANDOM()
-        const queryStr = `
-          SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
-          FROM questions q
-          WHERE q.domain = ? AND q.difficulty = ?
-          ORDER BY usage_count ASC, RANDOM()
-        `;
-        let pool = await db.query(queryStr, [slot.domain, slot.difficulty]);
-        
-        let matchedQ = pool.find(q => !chosenQuestionsMap.has(q.id));
-        
-        // 2. Fallback A: If no exact match, relax difficulty constraint (same domain, any difficulty)
-        if (!matchedQ) {
-          const fbQuery = `
-            SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
-            FROM questions q
-            WHERE q.domain = ?
-            ORDER BY ABS(q.difficulty - ?) ASC, usage_count ASC, RANDOM()
-          `;
-          const fbPool = await db.query(fbQuery, [slot.domain, slot.difficulty]);
-          matchedQ = fbPool.find(q => !chosenQuestionsMap.has(q.id));
-        }
-
-        // 3. Fallback B: If still no match, relax domain constraint (any domain, same difficulty)
-        if (!matchedQ) {
-          const fbQuery = `
-            SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
-            FROM questions q
-            WHERE q.difficulty = ?
-            ORDER BY usage_count ASC, RANDOM()
-          `;
-          const fbPool = await db.query(fbQuery, [slot.difficulty]);
-          matchedQ = fbPool.find(q => !chosenQuestionsMap.has(q.id));
-        }
-
-        // 4. Fallback C: Grab any question
-        if (!matchedQ) {
-          const fbQuery = `
-            SELECT q.id, q.difficulty, q.domain, (SELECT COUNT(*) FROM test_selected_questions tsq WHERE tsq.question_id = q.id) as usage_count
-            FROM questions q
-            ORDER BY usage_count ASC, RANDOM()
-          `;
-          const fbPool = await db.query(fbQuery, []);
-          matchedQ = fbPool.find(q => !chosenQuestionsMap.has(q.id));
-        }
-
-        if (matchedQ) {
-          chosenQuestionsMap.set(matchedQ.id, matchedQ);
-        }
-      }
-
-      finalQuestionIds = Array.from(chosenQuestionsMap.keys());
-    } else {
-      // Manual/Direct Selection
-      finalQuestionIds = selected_questions;
-    }
-
-    // 3. Link questions to test
-    for (const qId of finalQuestionIds) {
-      await db.run(
-        'INSERT INTO test_selected_questions (test_id, question_id) VALUES (?, ?)',
-        [testId, qId]
+    const config = testConfig.normalizeConfig(req.body || {});
+    const testId = await db.transaction(async tx => {
+      const questions = await testConfig.selectQuestions(tx, config, config.is_random);
+      const inserted = await tx.run(
+        `INSERT INTO tests (title, created_by, num_questions, difficulty_distribution, domains,
+          is_random, duration, require_seb, pass_threshold, pinned_questions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [config.title, req.user.id, questions.length, JSON.stringify(config.difficulty_distribution),
+          JSON.stringify(config.domains), Number(config.is_random), config.duration,
+          Number(config.require_seb), config.pass_threshold, JSON.stringify(config.pinned_questions)]
       );
-    }
-
-    res.status(201).json({
-      testId,
-      title,
-      questionCount: finalQuestionIds.length,
-      is_random,
-      message: 'Test generated and saved successfully'
+      await testConfig.replaceQuestionLinks(tx, inserted.id, questions);
+      return inserted.id;
     });
-  } catch (err) {
-    res.status(500).json({ error: safeError(err) });
+    await audit(req, 'test.created', 'test', testId);
+    res.status(201).json({ testId, title: config.title, questionCount: config.num_questions,
+      is_random: config.is_random, message: 'Test generated and saved successfully' });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : safeError(error) });
   }
 });
 
-// Regenerate randomized questions for an existing test
+router.get('/tests/:id', authenticateToken, async (req, res) => {
+  try {
+    res.json(await db.transaction(tx => testConfig.getTestDetail(req.params.id, tx)));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : safeError(error) });
+  }
+});
+
+router.get('/tests/:id/export/:format', authenticateToken, async (req, res) => {
+  const { format } = req.params;
+  if (!['docx', 'pdf'].includes(format)) return res.status(400).json({ error: 'Choose DOCX or PDF format.' });
+  try {
+    const test = await db.transaction(tx => testConfig.getTestDetail(req.params.id, tx));
+    const includeAnswers = req.query.answers === '1';
+    const buffer = await createTestExport(test, format, includeAnswers);
+    const title = test.title.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || 'assessment';
+    res.set('Content-Type', format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.set('Content-Disposition', `attachment; filename="${title}-${test.id}${includeAnswers ? '-with-answer-key' : ''}.${format}"`);
+    res.set('Cache-Control', 'private, no-store');
+    await audit(req, 'test.exported', 'test', test.id, { revision: test.revision, format, includeAnswers });
+    res.send(buffer);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : safeError(error) });
+  }
+});
+
+router.put('/tests/:id', authenticateToken, async (req, res) => {
+  try {
+    const config = testConfig.normalizeConfig(req.body || {});
+    const redraw = config.is_random && req.body.redraw_questions === true;
+    const detail = await db.transaction(async tx => {
+      const current = await testConfig.getTestDetail(req.params.id, tx);
+      if (Number(req.body.revision) !== current.revision) {
+        testConfig.fail('This test was changed by another administrator. Reopen it before saving.', 409);
+      }
+      const questionIds = await testConfig.selectQuestions(tx, config, redraw);
+      await tx.run(
+        `UPDATE tests SET title = ?, num_questions = ?, difficulty_distribution = ?, domains = ?,
+          is_random = ?, duration = ?, require_seb = ?, pass_threshold = ?, pinned_questions = ?,
+          updated_at = CURRENT_TIMESTAMP, updated_by = ?, revision = revision + 1 WHERE id = ?`,
+        [config.title, questionIds.length, JSON.stringify(config.difficulty_distribution), JSON.stringify(config.domains),
+          Number(config.is_random), config.duration, Number(config.require_seb), config.pass_threshold,
+          JSON.stringify(config.pinned_questions), req.user.id, current.id]
+      );
+      await testConfig.replaceQuestionLinks(tx, current.id, questionIds);
+      // Pending candidates receive the revised layout and need a matching SEB configuration.
+      if (current.require_seb !== config.require_seb) {
+        await tx.run("UPDATE test_sessions SET seb_config_key = NULL WHERE test_id = ? AND status = 'pending'", [current.id]);
+      }
+      return testConfig.getTestDetail(current.id, tx);
+    });
+    await audit(req, 'test.updated', 'test', detail.id, { revision: detail.revision, questionsRedrawn: redraw });
+    res.json(detail);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : safeError(error) });
+  }
+});
+
 router.post('/tests/:id/regenerate', authenticateToken, async (req, res) => {
   try {
-    const test = await db.get('SELECT * FROM tests WHERE id = ?', [req.params.id]);
-    if (!test) {
-      return res.status(404).json({ error: 'Test configuration not found' });
-    }
-
-    if (!test.is_random) {
-      return res.status(400).json({ error: 'Only dynamically generated tests can be regenerated' });
-    }
-
-    const num_questions = test.num_questions;
-    const targetDist = JSON.parse(test.difficulty_distribution);
-    const targetDomains = JSON.parse(test.domains);
-
-    // Randomized question selector based on domain & difficulty distribution
-    const chosenQuestionsMap = new Map();
-    let allocatedCount = 0;
-    const diffTargets = {};
-    const diffKeys = ["1", "2", "3", "4", "5"];
-
-    diffKeys.forEach((key) => {
-      const pct = targetDist[key] !== undefined ? targetDist[key] : 0;
-      const targetForLevel = Math.round(num_questions * (pct / 100));
-      diffTargets[key] = targetForLevel;
-      allocatedCount += targetForLevel;
+    const detail = await db.transaction(async tx => {
+      const current = await testConfig.getTestDetail(req.params.id, tx);
+      if (!current.is_random) testConfig.fail('Only randomized tests can be regenerated.');
+      const config = testConfig.normalizeConfig({ ...current,
+        selected_questions: [], pinned_questions: current.pinned_questions });
+      const questions = await testConfig.selectQuestions(tx, config, true);
+      await testConfig.replaceQuestionLinks(tx, current.id, questions);
+      await tx.run(`UPDATE tests SET num_questions = ?, updated_at = CURRENT_TIMESTAMP,
+        updated_by = ?, revision = revision + 1 WHERE id = ?`, [questions.length, req.user.id, current.id]);
+      return testConfig.getTestDetail(current.id, tx);
     });
-
-    let difference = num_questions - allocatedCount;
-    if (difference !== 0) {
-      diffTargets["3"] += difference;
-      if (diffTargets["3"] < 0) diffTargets["3"] = 0;
-    }
-
-    for (const diff of diffKeys) {
-      const countNeeded = diffTargets[diff];
-      if (countNeeded <= 0) continue;
-
-      const placeholders = targetDomains.map(() => '?').join(',');
-      const queryStr = `
-        SELECT id FROM questions 
-        WHERE difficulty = ? AND domain IN (${placeholders}) 
-        ORDER BY RANDOM() LIMIT ?
-      `;
-
-      const params = [parseInt(diff), ...targetDomains, countNeeded];
-      const selected = await db.query(queryStr, params);
-      selected.forEach(q => chosenQuestionsMap.set(q.id, true));
-    }
-
-    if (chosenQuestionsMap.size < num_questions) {
-      const neededBackfill = num_questions - chosenQuestionsMap.size;
-      const placeholders = targetDomains.map(() => '?').join(',');
-      const queryStr = `
-        SELECT id FROM questions 
-        WHERE domain IN (${placeholders}) 
-        ORDER BY RANDOM()
-      `;
-      const allPossible = await db.query(queryStr, targetDomains);
-      for (const q of allPossible) {
-        if (chosenQuestionsMap.size >= num_questions) break;
-        chosenQuestionsMap.set(q.id, true);
-      }
-    }
-
-    const finalQuestionIds = Array.from(chosenQuestionsMap.keys());
-
-    // Update DB: delete old linked questions and insert new ones
-    await db.run('DELETE FROM test_selected_questions WHERE test_id = ?', [test.id]);
-    for (const qId of finalQuestionIds) {
-      await db.run(
-        'INSERT INTO test_selected_questions (test_id, question_id) VALUES (?, ?)',
-        [test.id, qId]
-      );
-    }
-
-    res.json({ message: 'Questions regenerated successfully', questionCount: finalQuestionIds.length });
-  } catch (err) {
-    res.status(500).json({ error: safeError(err) });
+    await audit(req, 'test.questions_redrawn', 'test', detail.id, { revision: detail.revision });
+    res.json({ message: 'Questions regenerated successfully', questionCount: detail.questions.length });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : safeError(error) });
   }
 });
 
@@ -1610,7 +1413,7 @@ router.post('/sessions', authenticateToken, async (req, res) => {
 router.get('/sessions/:id', requireCandidateAccount, async (req, res) => {
   try {
     let session = await db.get(`
-      SELECT ts.*, t.title as test_title, t.num_questions, t.duration, t.require_seb
+      SELECT ts.*, COALESCE(ts.test_title_snapshot, t.title) AS test_title, t.num_questions, COALESCE(ts.duration_snapshot, t.duration) AS duration, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb
       FROM test_sessions ts
       JOIN tests t ON ts.test_id = t.id
       WHERE ts.id = ?
@@ -1621,7 +1424,7 @@ router.get('/sessions/:id', requireCandidateAccount, async (req, res) => {
     }
     if (session.status === 'active' && await finalizeExpiredSession(session)) {
       session = await db.get(`
-        SELECT ts.*, t.title as test_title, t.num_questions, t.duration, t.require_seb
+        SELECT ts.*, COALESCE(ts.test_title_snapshot, t.title) AS test_title, t.num_questions, COALESCE(ts.duration_snapshot, t.duration) AS duration, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb
         FROM test_sessions ts
         JOIN tests t ON ts.test_id = t.id
         WHERE ts.id = ?
@@ -1635,7 +1438,7 @@ router.get('/sessions/:id', requireCandidateAccount, async (req, res) => {
     res.json({
       id: session.id,
       test_title: session.test_title,
-      num_questions: session.num_questions,
+      num_questions: session.questions_snapshot ? JSON.parse(session.questions_snapshot).length : session.num_questions,
       candidate_email: session.candidate_email,
       candidate_name: session.candidate_name,
       status: session.status,
@@ -1662,54 +1465,37 @@ router.post('/sessions/:id/start', requireCandidateAccount, async (req, res) => 
   }
 
   try {
-    const session = await db.get(`
-      SELECT ts.*, t.require_seb FROM test_sessions ts
-      JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
-    `, [req.params.id]);
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-
-    if (session.status !== 'pending') {
-      return res.status(409).json({ error: 'Session is already started or completed' });
-    }
-    if (session.expires_at && new Date(`${session.expires_at}Z`) <= new Date()) {
-      return res.status(410).json({ error: 'This candidate account has expired' });
-    }
-    if (!enforceSeb(req, res, session)) return;
-
-    // Gather questions at this exact time, store snapshot
-    const rawQuestions = await db.query(`
-      SELECT q.id, q.domain, q.difficulty, q.points, q.question_text, q.options 
-      FROM questions q
-      JOIN test_selected_questions tsq ON q.id = tsq.question_id
-      WHERE tsq.test_id = ?
-    `, [session.test_id]);
-
-    const questionsSnapshot = rawQuestions.map(q => ({
-      id: q.id,
-      domain: q.domain,
-      difficulty: q.difficulty,
-      points: q.points,
-      question_text: q.question_text,
-      options: JSON.parse(q.options)
-    }));
-
-    // Update session state
-    const update = await db.run(
-      `UPDATE test_sessions
-       SET candidate_name = ?, candidate_info = ?, started_at = CURRENT_TIMESTAMP,
-           status = 'active', questions_snapshot = ?
-       WHERE id = ? AND status = 'pending'
-         AND (expires_at IS NULL OR datetime(expires_at) > CURRENT_TIMESTAMP)`,
-      [candidate_name, '{}', JSON.stringify(questionsSnapshot), req.params.id]
-    );
-    if (update.changes !== 1) {
-      return res.status(409).json({ error: 'Session was already started or the candidate account expired' });
-    }
-
-    // Get test duration and SEB requirements
-    const testObj = await db.get('SELECT duration, require_seb FROM tests WHERE id = ?', [session.test_id]);
+    const started = await db.transaction(async tx => {
+      const session = await tx.get(`
+        SELECT ts.*, t.title AS test_title, t.duration, t.pass_threshold, t.require_seb
+        FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
+      `, [req.params.id]);
+      if (!session) testConfig.fail('Session not found', 404);
+      if (session.status !== 'pending') testConfig.fail('Session is already started or completed', 409);
+      if (session.expires_at && new Date(`${session.expires_at}Z`) <= new Date()) {
+        testConfig.fail('This candidate account has expired', 410);
+      }
+      if (!enforceSeb(req, res, session)) return null;
+      const rawQuestions = await tx.query(`
+        SELECT q.id, q.domain, q.difficulty, q.points, q.question_text, q.options
+        FROM questions q JOIN test_selected_questions tsq ON q.id = tsq.question_id
+        WHERE tsq.test_id = ? ORDER BY tsq.position, q.id
+      `, [session.test_id]);
+      if (!rawQuestions.length) testConfig.fail('This test has no questions. Contact the administrator.', 409);
+      const questionsSnapshot = rawQuestions.map(question => ({ ...question, options: JSON.parse(question.options) }));
+      const update = await tx.run(
+        `UPDATE test_sessions SET candidate_name = ?, candidate_info = '{}', started_at = CURRENT_TIMESTAMP,
+          status = 'active', questions_snapshot = ?, test_title_snapshot = ?, duration_snapshot = ?,
+          pass_threshold_snapshot = ?, require_seb_snapshot = ?
+          WHERE id = ? AND status = 'pending'`,
+        [candidate_name, JSON.stringify(questionsSnapshot), session.test_title, session.duration,
+          session.pass_threshold, session.require_seb, req.params.id]
+      );
+      if (update.changes !== 1) testConfig.fail('Session was already started', 409);
+      return { session, questionsSnapshot };
+    });
+    if (!started) return;
+    const { session, questionsSnapshot } = started;
 
     // Return questions snapshot to runner, STRIPPING correct answers for cheating protection
     const sanitizedQuestions = questionsSnapshot.map(q => ({
@@ -1729,19 +1515,19 @@ router.post('/sessions/:id/start', requireCandidateAccount, async (req, res) => 
       questions: sanitizedQuestions,
       responses: {},
       responses_version: 0,
-      duration: testObj?.duration || 20,
-      deadline: new Date(Date.now() + (testObj?.duration || 20) * 60000).toISOString(),
-      require_seb: !!testObj?.require_seb
+      duration: session.duration,
+      deadline: new Date(Date.now() + session.duration * 60000).toISOString(),
+      require_seb: !!session.require_seb
     });
   } catch (err) {
-    res.status(500).json({ error: safeError(err) });
+    res.status(err.status || 500).json({ error: err.status ? err.message : safeError(err) });
   }
 });
 
 // Log candidate focus loss / tab switching violation
 router.post('/sessions/:id/log-focus-lost', requireCandidateAccount, async (req, res) => {
   try {
-    const session = await db.get(`SELECT ts.seb_config_key, t.require_seb FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?`, [req.params.id]);
+    const session = await db.get(`SELECT ts.seb_config_key, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?`, [req.params.id]);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     if (!enforceSeb(req, res, session)) return;
     const result = await db.run(
@@ -1761,7 +1547,7 @@ router.post('/sessions/:id/log-focus-lost', requireCandidateAccount, async (req,
 router.get('/sessions/:id/seb-config', requireCandidateAccount, async (req, res) => {
   try {
     const session = await db.get(`
-      SELECT ts.id, ts.status, ts.expires_at, t.require_seb
+      SELECT ts.id, ts.status, ts.expires_at, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb
       FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
     `, [req.params.id]);
     if (!session) {
@@ -1834,9 +1620,9 @@ ${sebSettingsXml}
 router.get('/sessions/:id/take', requireCandidateAccount, async (req, res) => {
   try {
     const session = await db.get(`
-      SELECT ts.*, t.duration, t.require_seb,
-             datetime(ts.started_at, '+' || t.duration || ' minutes') AS deadline,
-             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || t.duration || ' minutes', ?)
+      SELECT ts.*, COALESCE(ts.duration_snapshot, t.duration) AS duration, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb,
+             datetime(ts.started_at, '+' || COALESCE(ts.duration_snapshot, t.duration) || ' minutes') AS deadline,
+             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || COALESCE(ts.duration_snapshot, t.duration) || ' minutes', ?)
                   THEN 1 ELSE 0 END AS expired
       FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
     `, [`+${sessionSubmitGraceSeconds} seconds`, req.params.id]);
@@ -1888,8 +1674,8 @@ router.get('/sessions/:id/take', requireCandidateAccount, async (req, res) => {
 router.put('/sessions/:id/responses', requireCandidateAccount, async (req, res) => {
   try {
     const session = await db.get(`
-      SELECT ts.*, t.duration, t.require_seb,
-             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || t.duration || ' minutes', ?)
+      SELECT ts.*, COALESCE(ts.duration_snapshot, t.duration) AS duration, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb,
+             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || COALESCE(ts.duration_snapshot, t.duration) || ' minutes', ?)
                   THEN 1 ELSE 0 END AS expired
       FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
     `, [`+${sessionSubmitGraceSeconds} seconds`, req.params.id]);
@@ -1942,8 +1728,8 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
 
   try {
     const session = await db.get(`
-      SELECT ts.*, t.duration, t.require_seb,
-             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || t.duration || ' minutes', ?)
+      SELECT ts.*, COALESCE(ts.duration_snapshot, t.duration) AS duration, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb,
+             CASE WHEN CURRENT_TIMESTAMP > datetime(ts.started_at, '+' || COALESCE(ts.duration_snapshot, t.duration) || ' minutes', ?)
                   THEN 1 ELSE 0 END AS expired
       FROM test_sessions ts JOIN tests t ON t.id = ts.test_id WHERE ts.id = ?
     `, [`+${sessionSubmitGraceSeconds} seconds`, req.params.id]);
@@ -2004,7 +1790,7 @@ router.post('/sessions/:id/submit', requireCandidateAccount, async (req, res) =>
 
 async function loadSessionResult(sessionId, includeFeedback, includeInternalReview = false) {
   const session = await db.get(`
-    SELECT ts.*, t.require_seb, t.title AS test_title, t.pass_threshold,
+    SELECT ts.*, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb, COALESCE(ts.test_title_snapshot, t.title) AS test_title, COALESCE(ts.pass_threshold_snapshot, t.pass_threshold) AS pass_threshold,
            reviewer.username AS decided_by_name
     FROM test_sessions ts
     JOIN tests t ON ts.test_id = t.id
@@ -2101,7 +1887,7 @@ router.get('/sessions', authenticateToken, async (req, res) => {
              ts.score, ts.total_points, ts.status, ts.focus_lost_count, ts.created_at,
              ts.first_login_at, ts.expires_at, ts.revoked_at, ts.responses_updated_at,
              ts.decision_status, ts.decision_note, ts.decided_at,
-             t.title as test_title, t.require_seb, t.pass_threshold, u.username as creator_name,
+             COALESCE(ts.test_title_snapshot, t.title) AS test_title, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb, COALESCE(ts.pass_threshold_snapshot, t.pass_threshold) AS pass_threshold, u.username as creator_name,
              reviewer.username AS decided_by_name,
              ca.id AS candidate_account_id,
              (SELECT MAX(COALESCE(se.delivered_at, se.last_attempt_at, se.sent_at))
@@ -2388,7 +2174,7 @@ router.get('/admin/candidate-email-template', authenticateToken, requireRole(['a
   try {
     const session = await db.get(
       `SELECT ca.email, ca.password_encrypted, ts.status,
-              t.title, t.num_questions, t.duration, t.require_seb
+              t.title, t.num_questions, COALESCE(ts.duration_snapshot, t.duration) AS duration, COALESCE(ts.require_seb_snapshot, t.require_seb) AS require_seb
        FROM candidate_accounts ca
        JOIN test_sessions ts ON ts.id = ca.session_id
        JOIN tests t ON t.id = ts.test_id

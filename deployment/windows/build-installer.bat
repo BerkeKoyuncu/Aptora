@@ -44,7 +44,8 @@ if errorlevel 1 (
 )
 
 if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
-mkdir "%BACKEND_STAGE%" "%CLIENT_STAGE%" "%RUNTIME_STAGE%" "%NPM_CACHE%" >nul
+if not exist "%NPM_CACHE%" mkdir "%NPM_CACHE%" >nul
+mkdir "%BACKEND_STAGE%" "%CLIENT_STAGE%" "%RUNTIME_STAGE%" >nul
 if errorlevel 1 (
   echo ERROR: Temporary installer staging directories could not be created.
   goto :fail
@@ -80,7 +81,7 @@ if errorlevel 1 goto :fail
 
 echo [6/7] Verifying the staged runtime...
 pushd "%BUILD_DIR%"
-"%RUNTIME_STAGE%\node.exe" -e "require('./server/node_modules/sqlite3');require('./server/node_modules/express');require('./server/node_modules/exceljs');console.log('Runtime dependencies verified.')"
+"%RUNTIME_STAGE%\node.exe" -e "const runtimeRequire=require('module').createRequire(process.cwd()+'/server/package.json');['sqlite3','express','exceljs','docx','pdfkit'].forEach(name=>runtimeRequire(name));console.log('Runtime dependencies verified.')"
 set "VERIFY_RESULT=%ERRORLEVEL%"
 popd
 if not "%VERIFY_RESULT%"=="0" goto :fail

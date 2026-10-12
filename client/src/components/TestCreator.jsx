@@ -3,8 +3,16 @@ import { api } from '../api';
 import { RefreshCw, FileText, CheckSquare, Square } from 'lucide-react';
 
 const DIFFICULTY_LABELS = { 1: 'Beginner', 2: 'Elementary', 3: 'Intermediate', 4: 'Advanced', 5: 'Expert' };
+const DEFAULT_DOMAINS = [
+  'Network Fundamentals', 'Network Security & Edge Security', 'Identity & Access Security',
+  'Security Operations & Monitoring', 'Vulnerability, Exposure & Security Testing',
+  'Application & Software Security', 'Data Security & Storage', 'Cloud & Data Centre Infrastructure', 'OT Security', 'General'
+];
 
-export default function TestCreator({ addToast }) {
+export default function TestCreator({ addToast, initialTest = null, onSaved, onCancel }) {
+  const editing = !!initialTest;
+  const [saving, setSaving] = useState(false);
+  const [redrawQuestions, setRedrawQuestions] = useState(false);
   const [title, setTitle] = useState('');
   const [numQuestions, setNumQuestions] = useState(10);
   const [isRandom, setIsRandom] = useState(true);
@@ -29,23 +37,9 @@ export default function TestCreator({ addToast }) {
     }
   };
   
-  // Available domains list
-  const domainsList = [
-    'Network Fundamentals',
-    'Network Security & Edge Security',
-    'Identity & Access Security',
-    'Security Operations & Monitoring',
-    'Vulnerability, Exposure & Security Testing',
-    'Application & Software Security',
-    'Data Security & Storage',
-    'Cloud & Data Centre Infrastructure',
-    'OT Security',
-    'General'
-  ];
-
   // Domains checkboxes (all checked by default)
   const [selectedDomains, setSelectedDomains] = useState(
-    domainsList.reduce((acc, d) => ({ ...acc, [d]: true }), {})
+    DEFAULT_DOMAINS.reduce((acc, d) => ({ ...acc, [d]: true }), {})
   );
 
   // Difficulty Distribution state (sums to 100%) - Defaults to a bell curve
@@ -62,6 +56,22 @@ export default function TestCreator({ addToast }) {
   const [allQuestions, setAllQuestions] = useState([]);
   const [selectedQuestionIds, setSelectedQuestionIds] = useState([]);
   const [loadingQuestions, setLoadingQuestions] = useState(false);
+  const domainsList = [...new Set([...DEFAULT_DOMAINS, ...(initialTest?.domains || []), ...allQuestions.map(question => question.domain)])];
+
+  useEffect(() => {
+    if (!initialTest) return;
+    setTitle(initialTest.title);
+    setNumQuestions(initialTest.num_questions);
+    setIsRandom(initialTest.is_random);
+    setDuration(initialTest.duration);
+    setPassThreshold(initialTest.pass_threshold ?? 70);
+    setRequireSeb(initialTest.require_seb);
+    setDist(initialTest.difficulty_distribution);
+    setDifficultyPreset('custom');
+    setSelectedDomains(Object.fromEntries([...new Set([...DEFAULT_DOMAINS, ...initialTest.domains])].map(domain => [domain, initialTest.domains.includes(domain)])));
+    setSelectedQuestionIds(initialTest.questions.map(question => question.id));
+    setUseHybrid(initialTest.pinned_questions.length > 0);
+  }, [initialTest]);
 
   useEffect(() => {
     fetchQuestions();
@@ -125,7 +135,7 @@ export default function TestCreator({ addToast }) {
         addToast(`Difficulty weights must sum to exactly 100%. Currently: ${totalPct}%`, 'error');
         return;
       }
-      if (useHybrid) {
+      if (useHybrid && (!editing || redrawQuestions)) {
         if (selectedQuestionIds.length === 0) {
           addToast('Please pin at least one question or turn off hybrid mode', 'warning');
           return;
@@ -143,18 +153,28 @@ export default function TestCreator({ addToast }) {
     }
 
     try {
+      setSaving(true);
       const payload = {
         title,
         num_questions: isRandom ? numQuestions : selectedQuestionIds.length,
         domains: domainsArray,
         is_random: isRandom,
         difficulty_distribution: dist,
-        selected_questions: selectedQuestionIds,
+        selected_questions: isRandom && !editing && !useHybrid ? [] : selectedQuestionIds,
+        pinned_questions: isRandom && useHybrid && (!editing || redrawQuestions) ? selectedQuestionIds : (editing ? initialTest.pinned_questions.filter(id => selectedQuestionIds.includes(id)) : []),
+        redraw_questions: redrawQuestions,
+        revision: initialTest?.revision,
         duration: parseInt(duration) || 20,
         pass_threshold: parseInt(passThreshold),
         require_seb: requireSeb
       };
 
+      if (editing) {
+        const updated = await api.updateTest(initialTest.id, payload);
+        addToast('Test configuration updated successfully.');
+        onSaved?.(updated);
+        return;
+      }
       await api.createTest(payload);
       addToast('Test configuration generated successfully!');
       
@@ -169,13 +189,15 @@ export default function TestCreator({ addToast }) {
       setRequireSeb(false);
     } catch (err) {
       addToast(err.message, 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
   // Filter questions for manual selection by active domains and selected UI search filters
   const activeDomains = Object.keys(selectedDomains).filter(d => selectedDomains[d]);
   const filteredQuestions = allQuestions.filter(q => {
-    if (!activeDomains.includes(q.domain)) return false;
+    if (!activeDomains.includes(q.domain) && !selectedQuestionIds.includes(q.id)) return false;
     if (selectSearch.trim() && !q.question_text.toLowerCase().includes(selectSearch.toLowerCase())) return false;
     if (selectDomain && q.domain !== selectDomain) return false;
     if (selectDiff && q.difficulty !== parseInt(selectDiff)) return false;
@@ -300,7 +322,7 @@ export default function TestCreator({ addToast }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', borderBottom: '1px solid var(--color-border)', paddingBottom: '1rem', marginBottom: '1.5rem' }}>
         <FileText size={24} style={{ color: 'var(--color-primary)' }} />
         <div>
-          <h2 style={{ margin: 0 }}>Create Test Layout</h2>
+          <h2 style={{ margin: 0 }}>{editing ? 'Edit Test Layout' : 'Create Test Layout'}</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
             Configure test templates for candidate evaluation. You can generate randomized tests dynamically or pick questions manually.
           </p>
@@ -308,6 +330,12 @@ export default function TestCreator({ addToast }) {
       </div>
 
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        {editing && (
+          <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+            Changes apply to candidates who have not started. Started assessments retain their questions, duration, pass threshold and SEB settings.
+            {' '}If you have already sent an invitation, review and resend its instructions after changing the assessment settings.
+          </p>
+        )}
         {/* Title & Duration */}
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1.35fr', gap: '1rem' }}>
           <div>
@@ -501,7 +529,18 @@ export default function TestCreator({ addToast }) {
               </div>
             )}
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem' }}>
+            {editing && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+                <input type="checkbox" checked={redrawQuestions} style={{ width: 16 }}
+                  onChange={event => {
+                    setRedrawQuestions(event.target.checked);
+                    setSelectedQuestionIds(event.target.checked ? initialTest.pinned_questions : initialTest.questions.map(question => question.id));
+                    setUseHybrid(event.target.checked && initialTest.pinned_questions.length > 0);
+                  }} />
+                Draw a fresh question set when saving
+              </label>
+            )}
+            {(!editing || redrawQuestions) && <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem' }}>
               <input 
                 type="checkbox" 
                 id="useHybrid" 
@@ -515,9 +554,10 @@ export default function TestCreator({ addToast }) {
               <label htmlFor="useHybrid" style={{ margin: 0, fontWeight: 600, cursor: 'pointer', fontSize: '0.85rem' }}>
                 Pre-select / Pin specific questions (Fill remaining questions randomly)
               </label>
-            </div>
+            </div>}
 
-            {useHybrid && renderQuestionsTable("Pin Questions to Random Test")}
+            {(!editing || redrawQuestions) && useHybrid && renderQuestionsTable("Pin Questions to Random Test")}
+            {editing && !redrawQuestions && renderQuestionsTable('Current Test Questions - Select or Replace')}
           </div>
         ) : (
           /* Manual Selection Mode Panel */
@@ -525,9 +565,10 @@ export default function TestCreator({ addToast }) {
         )}
 
         {/* Submit Actions */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid var(--color-border)', paddingTop: '1.25rem', marginTop: '0.5rem' }}>
-          <button type="submit" className="btn btn-primary" style={{ minWidth: '150px' }}>
-            Generate Test Schema
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', borderTop: '1px solid var(--color-border)', paddingTop: '1.25rem', marginTop: '0.5rem' }}>
+          {editing && <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>Cancel</button>}
+          <button type="submit" className="btn btn-primary" style={{ minWidth: '150px' }} disabled={saving}>
+            {saving ? 'Saving...' : editing ? 'Save Test Changes' : 'Generate Test Schema'}
           </button>
         </div>
       </form>

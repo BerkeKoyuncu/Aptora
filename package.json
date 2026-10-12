@@ -1,9 +1,10 @@
 {
   "name": "aptora",
-  "version": "1.3.2",
+  "version": "1.4.2",
   "description": "Aptora - Testing & Grading App",
   "main": "server/server.js",
   "scripts": {
+    "test:history": "node scripts/test-history.test.js",
     "sync:version": "node scripts/sync-version.js",
     "install:all": "npm ci --cache .npm-cache && npm ci --prefix server --cache .npm-cache && npm ci --prefix client --cache .npm-cache",
     "server": "node server/server.js",

@@ -115,6 +115,20 @@ export const api = {
   getTests: () =>
     request('/tests', { method: 'GET' }),
 
+  getTest: (id) => request(`/tests/${id}`, { method: 'GET' }),
+
+  updateTest: (id, body) => request(`/tests/${id}`, { method: 'PUT', body }),
+
+  downloadTestExport: async (id, format, includeAnswers = false) => {
+    const response = await fetch(`${API_BASE}/tests/${id}/export/${format}?answers=${includeAnswers ? '1' : '0'}`, { credentials: 'include' });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Test export failed.');
+    }
+    const filename = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1] || `assessment-${id}.${format}`;
+    return { blob: await response.blob(), filename };
+  },
+
   createTest: (testData) =>
     request('/tests', { method: 'POST', body: testData }),
 

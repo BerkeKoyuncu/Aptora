@@ -1,12 +1,53 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { RefreshCw, Mail, CheckCircle, Trash2, Copy, Send } from 'lucide-react';
+import { RefreshCw, Mail, CheckCircle, Trash2, Copy, Send, Eye, Edit, FileDown } from 'lucide-react';
 import { formatDateUK } from '../utils/dateFormat';
+import TestDetails from './TestDetails';
+import TestExportDialog from './TestExportDialog';
 
 export default function TestHistory({ user, addToast }) {
   const [tests, setTests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState([]);
+  const [detail, setDetail] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [openingDetail, setOpeningDetail] = useState(null);
+  const [exportTarget, setExportTarget] = useState(null);
+  const [includeAnswers, setIncludeAnswers] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const openDetail = async (testId, edit = false) => {
+    try {
+      setOpeningDetail(testId);
+      setDetail(await api.getTest(testId));
+      setEditing(edit);
+    } catch (err) { addToast(err.message, 'error'); }
+    finally { setOpeningDetail(null); }
+  };
+
+  const openExport = (test, format) => {
+    setExportTarget({ test, format });
+    setIncludeAnswers(false);
+  };
+
+  const downloadExport = async () => {
+    if (!exportTarget || exporting) return;
+    setExporting(true);
+    try {
+      const result = await api.downloadTestExport(exportTarget.test.id, exportTarget.format, includeAnswers);
+      const url = URL.createObjectURL(result.blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setExportTarget(null);
+      addToast(`${exportTarget.format.toUpperCase()} exported successfully.`);
+    } catch (err) { addToast(err.message, 'error'); }
+    finally { setExporting(false); }
+  };
   
   // Invitation workflow states
   const [selectedTest, setSelectedTest] = useState(null);
@@ -147,6 +188,17 @@ export default function TestHistory({ user, addToast }) {
     );
   }
 
+  const exportDialog = exportTarget && <TestExportDialog test={exportTarget.test} format={exportTarget.format}
+    includeAnswers={includeAnswers} setIncludeAnswers={setIncludeAnswers} exporting={exporting}
+    onClose={() => setExportTarget(null)} onDownload={downloadExport} />;
+
+  if (detail) return <>
+    <TestDetails test={detail} editing={editing} setEditing={setEditing} onExport={openExport} addToast={addToast}
+      onBack={() => { setDetail(null); setEditing(false); }}
+      onSaved={updated => { setDetail(updated); setEditing(false); setTests(current => current.map(test => test.id === updated.id ? updated : test)); setSelectedTest(current => current?.id === updated.id ? updated : current); }} />
+    {exportDialog}
+  </>;
+
   return (
     <div className="animate-fade" style={{ display: 'flex', flexDirection: 'column', gap: '2rem', width: '100%', margin: 0 }}>
       {/* Title */}
@@ -154,7 +206,7 @@ export default function TestHistory({ user, addToast }) {
         <div>
           <h2>Test Configurations</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            Review created test configurations, regenerate question drafts, or create candidate access.
+            View and edit test details, export question papers, or create candidate access.
           </p>
         </div>
         <button onClick={fetchTests} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -204,7 +256,7 @@ export default function TestHistory({ user, addToast }) {
                 <th>Generation Mode</th>
                 <th>Created By</th>
                 <th>Created At</th>
-                <th style={{ width: '220px' }}>Actions</th>
+                <th style={{ minWidth: '290px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -227,7 +279,7 @@ export default function TestHistory({ user, addToast }) {
                     </td>
                   )}
                   <td>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{test.title}</div>
+                    <button type="button" onClick={() => openDetail(test.id)} style={{ border: 0, background: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', fontWeight: 600, color: 'var(--text-primary)' }}>{test.title}</button>
                   </td>
                   <td>
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
@@ -244,7 +296,10 @@ export default function TestHistory({ user, addToast }) {
                   <td>{test.creator_name}</td>
                   <td style={{ fontSize: '0.8rem' }}>{formatDateUK(test.created_at)}</td>
                   <td>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openDetail(test.id)} disabled={openingDetail === test.id} title="View test details"><Eye size={13} /> Details</button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openDetail(test.id, true)} disabled={openingDetail === test.id} title="Edit test"><Edit size={13} /> Edit</button>
+                      {['docx', 'pdf'].map(format => <button key={format} className="btn btn-secondary btn-sm" onClick={() => openExport(test, format)} title={`Export ${format.toUpperCase()}`}><FileDown size={13} /> {format.toUpperCase()}</button>)}
                       <button 
                         onClick={() => { setSelectedTest(test); setCandidateEmail(''); setInviteResult(null); }} 
                         className="btn btn-primary btn-sm"
@@ -381,6 +436,7 @@ export default function TestHistory({ user, addToast }) {
           </div>
         )}
       </div>
+      {exportDialog}
     </div>
   );
 }
