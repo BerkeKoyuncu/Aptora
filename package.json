@@ -1,6 +1,6 @@
 {
   "name": "aptora",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Aptora - Testing & Grading App",
   "main": "server/server.js",
   "scripts": {

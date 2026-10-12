@@ -93,6 +93,11 @@ function Start-Aptora {
   Rotate-Log $stderrLog
   $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   if ($task) {
+    # Migrate a legacy task-wide disable without turning boot startup back on.
+    if (-not $task.Settings.Enabled) {
+      Install-AptoraTask
+      $task = Get-ScheduledTask -TaskName $taskName
+    }
     if ($task.State -ne 'Running') { Start-ScheduledTask -TaskName $taskName }
   } else {
     Import-AptoraEnvironment
@@ -127,17 +132,48 @@ function Stop-Aptora {
   if (Test-Path -LiteralPath $pidFile) { Remove-Item -LiteralPath $pidFile -Force }
 }
 
+function Get-AptoraAutomaticStartup($task) {
+  if (-not $task) { return $true }
+  # Older Control Panels disabled the task itself to express this preference.
+  if (-not $task.Settings.Enabled) { return $false }
+  return @($task.Triggers | Where-Object {
+    $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' -and $_.Enabled
+  }).Count -gt 0
+}
+
+function Set-AptoraAutomaticStartup([bool]$enabled) {
+  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  if (-not $task) {
+    Install-AptoraTask
+    $task = Get-ScheduledTask -TaskName $taskName
+  }
+  $triggers = @($task.Triggers)
+  $bootTriggers = @($triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' })
+  if ($bootTriggers.Count -eq 0) {
+    $bootTriggers = @(New-ScheduledTaskTrigger -AtStartup)
+    $triggers += $bootTriggers
+  }
+  foreach ($trigger in $bootTriggers) { $trigger.Enabled = $enabled }
+  # Keep demand starts possible; changing a trigger does not stop a running instance.
+  $settings = $task.Settings
+  $settings.Enabled = $true
+  $settings.AllowDemandStart = $true
+  Set-ScheduledTask -TaskName $taskName -Trigger $triggers -Settings $settings | Out-Null
+}
+
 function Install-AptoraTask {
   $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   $taskAction = New-ScheduledTaskAction -Execute $env:ComSpec -Argument "/d /s /c `"`"$backendScript`"`""
   $trigger = New-ScheduledTaskTrigger -AtStartup
+  $trigger.Enabled = Get-AptoraAutomaticStartup $existingTask
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
   # Always-on backend: no runtime deadline; retry failures at a bounded one-minute cadence.
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
   # Explicit XML duration also handles older ScheduledTasks providers that omit zero.
   $settings.ExecutionTimeLimit = 'PT0S'
-  if ($existingTask) { $settings.Enabled = $existingTask.Settings.Enabled }
+  $settings.Enabled = $true
+  $settings.AllowDemandStart = $true
   Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
   Write-Output 'Automatic startup task installed.'
 }
@@ -157,6 +193,6 @@ switch ($Action) {
   }
   'InstallTask' { Install-AptoraTask }
   'RemoveTask' { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue; 'Automatic startup task removed.' }
-  'EnableTask' { Enable-ScheduledTask -TaskName $taskName | Out-Null; 'Automatic startup enabled.' }
-  'DisableTask' { Disable-ScheduledTask -TaskName $taskName | Out-Null; 'Automatic startup disabled.' }
+  'EnableTask' { Set-AptoraAutomaticStartup $true; 'Automatic startup enabled. Manual server control remains available.' }
+  'DisableTask' { Set-AptoraAutomaticStartup $false; 'Automatic startup disabled. Manual server control remains available.' }
 }

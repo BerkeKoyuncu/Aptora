@@ -43,11 +43,34 @@ RestartCount       : 999
 RestartInterval    : PT1M
 ```
 
-`InstallTask` only registers/refreshes the task and preserves an existing disabled
-state. It does not start or stop the backend, change `aptora.env`, or access the
+Automatic startup is stored in the `AtStartup` trigger's `Enabled` property, not
+the task's enabled state. Control Panel options 5/6 toggle only boot startup;
+the task remains enabled with demand starts allowed, so manual Start, Stop and
+Restart work with either preference. Toggling startup does not start or stop an
+already running server. No extra task or preference file is created.
+
+`InstallTask` preserves the boot-start preference. Legacy task-wide disabled
+installations are migrated to an enabled task with a disabled boot trigger;
+manual Start also repairs that legacy state without enabling boot startup.
+It does not start or stop the backend, change `aptora.env`, or access the
 database, administrator accounts, application data or logs. If Aptora is already
 running, use the Control Panel's Restart during a maintenance window so the new
 policy applies to a new task invocation. Do not run `setup.bat` to refresh a task.
+
+Verify the startup preference separately from the task state:
+
+```powershell
+$task = Get-ScheduledTask -TaskName 'Aptora Server'
+$task.Settings | Format-List Enabled,AllowDemandStart,ExecutionTimeLimit,RestartCount,RestartInterval
+$task.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' } |
+    Format-List Enabled
+```
+
+Task `Enabled` and `AllowDemandStart` should always be true; the boot trigger's
+`Enabled` value represents the user's preference. Repository regression checks:
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-startup-preference.ps1`.
+These use native CIM objects and an in-memory Scheduler, not a real reboot or live
+SYSTEM task. Confirm boot and lifecycle behaviour on the target server as well.
 
 ## 1. Configure the process environment
 
